@@ -1,0 +1,110 @@
+[package]
+name = "icm20948-rp2350-async-examples"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+lto = true
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = true
+opt-level = 0
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = true
+lto = 'fat'
+opt-level = 's'
+
+[dependencies]
+embassy-rp = { version = "0.9.0", features = [
+    "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xa",
+] }
+embassy-executor = { version = "0.9.1", features = [
+    "arch-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { version = "0.5.0", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+embassy-sync = { version = "0.7.2", features = ["defmt"] }
+embassy-futures = { version = "0.1.2", features = ["defmt"] }
+defmt = "1.0.1"
+defmt-rtt = "1.1.0"
+cortex-m-rt = "0.7.5"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+static_cell = { version = "2.1.1", features = [] }
+icm20948 = { package = "icm20948-rs", path = "../..", features = ["async", "defmt"] }
+embedded-hal-bus = { version = "0.2.0", features = ["async"] }
+embedded-hal = "1.0"
+libm = "0.2"
+heapless = "0.8"
+ahrs = { version = "0.8", default-features = false }
+nalgebra = { version = "0.34", default-features = false, features = ["libm"] }
+micromath = "2.1"
+
+[features]
+default = []
+dmp = ["icm20948/dmp"]
+
+[[bin]]
+name = "basic_reading_async"
+path = "src/basic_reading_async.rs"
+
+[[bin]]
+name = "sensor_configuration_async"
+path = "src/sensor_configuration_async.rs"
+
+[[bin]]
+name = "magnetometer_async"
+path = "src/magnetometer_async.rs"
+
+[[bin]]
+name = "nine_axis_reading_async"
+path = "src/nine_axis_reading_async.rs"
+
+[[bin]]
+name = "fifo_batch_async"
+path = "src/fifo_batch_async.rs"
+
+# [[bin]]
+# name = "interrupts_async"
+# path = "src/interrupts_async.rs"
+
+[[bin]]
+name = "sample_rate_test_async"
+path = "src/sample_rate_test_async.rs"
+
+[[bin]]
+name = "calibration_async"
+path = "src/calibration_async.rs"
+
+[[bin]]
+name = "magnetometer_calibration_async"
+path = "src/magnetometer_calibration_async.rs"
+
+[[bin]]
+name = "self_test_async"
+path = "src/self_test_async.rs"
+
+[[bin]]
+name = "ahrs_euler_async"
+path = "src/ahrs_euler_async.rs"
+
+[[bin]]
+name = "fifo_data_validation_async"
+path = "src/fifo_data_validation_async.rs"
+
+[[bin]]
+name = "low_power_mode_async"
+path = "src/low_power_mode_async.rs"

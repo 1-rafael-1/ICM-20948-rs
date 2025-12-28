@@ -1,0 +1,255 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Check code formatting
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Lint with Clippy
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run Clippy
+        run: cargo clippy --all-features --lib
+
+  # Build the library with different feature combinations
+  build:
+    name: Build Library
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - ""
+          - "async"
+          - "defmt"
+          - "async,defmt"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+          cache-on-failure: true
+
+      - name: Build library
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo build --no-default-features
+          else
+            cargo build --no-default-features --features "${{ matrix.features }}"
+          fi
+
+      - name: Build library (release)
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo build --release --no-default-features
+          else
+            cargo build --release --no-default-features --features "${{ matrix.features }}"
+          fi
+
+  # Run all tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Run library unit tests
+        run: cargo test --lib
+
+      - name: Run driver tests (blocking API)
+        run: cargo test --test driver_tests --features std
+
+      - name: Run FIFO efficiency tests
+        run: cargo test --test fifo_efficiency_test --features std
+
+      - name: Run async tests
+        run: cargo test --test async_tests --features std,async
+
+  # Check documentation builds
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Cross-compile async examples for RP2350
+  examples-rp2350-async:
+    name: Build RP2350 Async Examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - basic_reading_async
+          - sensor_configuration_async
+          - magnetometer_async
+          - magnetometer_calibration_async
+          - nine_axis_reading_async
+          - fifo_batch_async
+          - fifo_data_validation_async
+          - low_power_mode_async
+          - calibration_async
+          - self_test_async
+          - sample_rate_test_async
+          - ahrs_euler_async
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv8m.main-none-eabihf
+
+      - name: Install flip-link
+        run: cargo install flip-link
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/rp2350-async
+          cache-on-failure: true
+
+      - name: Build async example (debug)
+        run: |
+          cd examples/rp2350-async
+          cargo build --bin ${{ matrix.example }}
+
+      - name: Build async example (release)
+        run: |
+          cd examples/rp2350-async
+          cargo build --bin ${{ matrix.example }} --release
+
+  # Cross-compile blocking examples for RP2350
+  examples-rp2350-blocking:
+    name: Build RP2350 Blocking Examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - basic_reading
+          - sensor_configuration
+          - magnetometer
+          - magnetometer_calibration
+          - nine_axis_reading
+          - fifo_batch
+          - fifo_data_validation
+          - low_power_mode
+          - calibration
+          - self_test
+          - sample_rate_test
+          - ahrs_euler
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv8m.main-none-eabihf
+
+      - name: Install flip-link
+        run: cargo install flip-link
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/rp2350-blocking
+          cache-on-failure: true
+
+      - name: Build blocking example (debug)
+        run: |
+          cd examples/rp2350-blocking
+          cargo build --bin ${{ matrix.example }}
+
+      - name: Build blocking example (release)
+        run: |
+          cd examples/rp2350-blocking
+          cargo build --bin ${{ matrix.example }} --release
+
+  # Final check that everything passed
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - format
+      - clippy
+      - build
+      - test
+      - docs
+      - examples-rp2350-async
+      - examples-rp2350-blocking
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all jobs
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All CI jobs passed!"

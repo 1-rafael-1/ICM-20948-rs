@@ -1,0 +1,71 @@
+[package]
+name = "icm20948-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["rafael.koch@gmx.net"]
+license = "MIT"
+description = "Platform-agnostic driver for the ICM-20948 9-axis IMU"
+repository = "https://github.com/1-rafael-1/ICM-20948-rs"
+keywords = ["embedded", "imu", "sensor", "driver", "no-std"]
+categories = ["embedded", "hardware-support", "no-std"]
+
+[lib]
+name = "icm20948"
+
+[dependencies]
+device-driver = { version = "1.0", default-features = false, features = ["dsl"] }
+embedded-hal = "1.0"
+embedded-hal-async = { version = "1.0", optional = true }
+defmt = { version = "1.0.1", optional = true }
+libm = "0.2"
+heapless = "0.8"
+
+[dev-dependencies]
+# For examples and tests
+approx = "0.5"
+futures = "0.3"
+
+[features]
+default = []
+std = []
+async = ["dep:embedded-hal-async"]
+defmt = ["dep:defmt", "device-driver/defmt-03"]
+dmp = []
+
+[[test]]
+name = "driver_tests"
+path = "tests/lib.rs"
+required-features = ["std"]
+
+[[test]]
+name = "async_tests"
+path = "tests/async_tests.rs"
+required-features = ["std", "async"]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Deny important lints
+missing_panics_doc = "deny"
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+unnecessary_cast = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# Allow some pedantic lints that are too strict for embedded
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+# Allow dependency issues we can't control
+multiple_crate_versions = "allow"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
