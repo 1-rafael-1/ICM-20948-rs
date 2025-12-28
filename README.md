@@ -1,7 +1,7 @@
 # ICM-20948 Driver
 
-![Crates.io](https://img.shields.io/badge/crates.io-not%20yet%20released-orange)
-![Documentation](https://img.shields.io/badge/docs.rs-not%20yet%20released-orange)
+[![Crates.io](https://img.shields.io/crates/v/icm20948-rs.svg)](https://crates.io/crates/icm20948-rs)
+[![Documentation](https://docs.rs/icm20948-rs/badge.svg)](https://docs.rs/icm20948-rs)
 [![CI](https://github.com/1-rafael-1/ICM-20948-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/1-rafael-1/ICM-20948-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](README.md#license)
 
@@ -222,7 +222,7 @@ All tests run automatically on every push and pull request.
 
 ## Documentation
 
-- API Documentation (not yet published)
+- [API Documentation](https://docs.rs/icm20948-rs)
 - [ICM-20948 Datasheet](https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/)
 - [device-driver toolkit documentation](https://diondokter.github.io/device-driver/)
 
