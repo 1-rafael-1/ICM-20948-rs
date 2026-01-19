@@ -76,8 +76,6 @@ pub enum Error<E> {
     InvalidDevice(u8),
     /// Invalid configuration parameter
     InvalidConfig,
-    /// Register bank switching error
-    BankSwitch,
     /// Magnetometer error
     Magnetometer,
     /// Device is moving during calibration (variance exceeds threshold)
