@@ -69,7 +69,7 @@ pub struct MagData {
 /// Main driver for the ICM-20948
 pub struct Icm20948Driver<I> {
     device: RegisterDevice<I>,
-    current_bank: Bank,
+    current_bank: Option<Bank>,
     // Sensor configurations
     accel_config: crate::sensors::AccelConfig,
     gyro_config: crate::sensors::GyroConfig,
@@ -99,7 +99,7 @@ where
         let device = RegisterDevice::new(interface);
         let mut driver = Self {
             device,
-            current_bank: Bank::Bank0,
+            current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
             gyro_config: crate::sensors::GyroConfig::default(),
             accel_calibration: crate::sensors::AccelCalibration::default(),
@@ -219,21 +219,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        if self.current_bank != bank {
-            let bank_value = bank as u8;
-            self.device.reg_bank_sel().modify(|w| {
-                w.set_user_bank(bank_value);
+        if self.current_bank != Some(bank) {
+            self.device.reg_bank_sel().write(|w| {
+                w.set_user_bank(bank as u8);
             })?;
 
-            // Verify the bank switch was successful
-            let reg = self.device.reg_bank_sel().read()?;
-            let actual_bank = reg.user_bank();
-
-            if actual_bank != bank_value {
-                return Err(Error::BankSwitch);
-            }
-
-            self.current_bank = bank;
+            self.current_bank = Some(bank);
         }
         Ok(())
     }
@@ -387,8 +378,12 @@ where
     }
 
     /// Get a mutable reference to the current bank tracker (for advanced usage)
-    pub const fn current_bank_mut(&mut self) -> &mut Bank {
-        &mut self.current_bank
+    ///
+    /// At initialization, before any banks have been selected this will return bank. Once the
+    /// driver selects a bank -- occurs on any register access -- then it knows the bank and from
+    /// then on this will always return a valid Bank value.
+    pub const fn current_bank_mut(&mut self) -> Option<&mut Bank> {
+        self.current_bank.as_mut()
     }
 
     // ==================== DMP METHODS ====================
@@ -4428,7 +4423,7 @@ where
         let device = RegisterDevice::new(interface);
         let mut driver = Self {
             device,
-            current_bank: Bank::Bank0,
+            current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
             gyro_config: crate::sensors::GyroConfig::default(),
             accel_calibration: crate::sensors::AccelCalibration::default(),
@@ -4513,24 +4508,15 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub async fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        if self.current_bank != bank {
-            let bank_value = bank as u8;
+        if self.current_bank != Some(bank) {
             self.device
                 .reg_bank_sel()
-                .modify_async(|w| {
-                    w.set_user_bank(bank_value);
+                .write_async(|w| {
+                    w.set_user_bank(bank as u8);
                 })
                 .await?;
 
-            // Verify the bank switch was successful
-            let reg = self.device.reg_bank_sel().read_async().await?;
-            let actual_bank = reg.user_bank();
-
-            if actual_bank != bank_value {
-                return Err(Error::BankSwitch);
-            }
-
-            self.current_bank = bank;
+            self.current_bank = Some(bank);
         }
         Ok(())
     }

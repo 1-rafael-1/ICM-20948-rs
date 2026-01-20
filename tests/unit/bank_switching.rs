@@ -13,13 +13,14 @@ fn test_bank_switch_basic() {
     // Verify bank switch occurred
     let ops = interface.operations();
 
-    // Should have a bank switch operation
+    // Should have a two bank switch operations:
+    // One when reading whoami in `new`, and a second from the `select_bank` call above
     let bank_switches: Vec<_> = ops
         .iter()
         .filter(|op| matches!(op, Operation::BankSwitch { .. }))
         .collect();
 
-    assert_eq!(bank_switches.len(), 1);
+    assert_eq!(bank_switches.len(), 2);
 }
 
 #[test]
@@ -31,7 +32,8 @@ fn test_bank_switch_noop() {
 
     let ops = interface.operations();
 
-    // Should have no bank switch operations (no-op)
+    // Should have one bank switch operation from selecting bank0 in `new`, and no more because
+    // setting the same bank again is a noop
     let bank_switches: Vec<_> = ops
         .iter()
         .filter(|op| matches!(op, Operation::BankSwitch { .. }))
@@ -39,7 +41,7 @@ fn test_bank_switch_noop() {
 
     assert_eq!(
         bank_switches.len(),
-        0,
+        1,
         "No bank switch should occur for same bank"
     );
 }
