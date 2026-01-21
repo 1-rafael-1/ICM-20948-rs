@@ -166,6 +166,9 @@ where
             w.set_clksel(1);
         })?;
 
+        // Empirically, a delay is required before other registers can be configured
+        delay.delay_ms(100);
+
         Ok(())
     }
 
@@ -4500,6 +4503,9 @@ where
                 w.set_clksel(1);
             })
             .await?;
+
+        // Empirically, a delay is required before other registers can be configured
+        delay.delay_ms(100).await;
 
         Ok(())
     }
