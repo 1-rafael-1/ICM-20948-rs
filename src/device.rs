@@ -147,6 +147,9 @@ where
     where
         D: embedded_hal::delay::DelayNs,
     {
+        const MAX_WAIT_MS: u32 = 100;
+        const POLL_INTERVAL_MS: u32 = 1;
+
         self.select_bank(Bank::Bank0)?;
 
         // Reset the device
@@ -154,17 +157,41 @@ where
             w.set_device_reset(true);
         })?;
 
-        // Wait for reset to complete
-        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
-        // Start-up time for register read/write is 11ms typical, 100ms max
-        // We use 100ms to ensure the device is fully ready
-        delay.delay_ms(100);
+        // Wait for reset to complete by polling device_reset bit
+        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
+        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+            delay.delay_ms(POLL_INTERVAL_MS);
+            if self
+                .device
+                .pwr_mgmt_1()
+                .read()
+                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+            {
+                break;
+            }
+        }
 
         // Wake up and select auto clock source
         self.device.pwr_mgmt_1().modify(|w| {
             w.set_sleep(false);
             w.set_clksel(1);
         })?;
+
+        // Wait and verify by checking we can read back the configuration correctly
+        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+            delay.delay_ms(POLL_INTERVAL_MS);
+
+            // Verify device is responding and configuration took effect
+            if self
+                .device
+                .pwr_mgmt_1()
+                .read()
+                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+            {
+                // Device is awake, clock is set
+                return Ok(());
+            }
+        }
 
         Ok(())
     }
@@ -4471,6 +4498,9 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
+        const MAX_WAIT_MS: u32 = 100;
+        const POLL_INTERVAL_MS: u32 = 1;
+
         self.select_bank(Bank::Bank0).await?;
 
         // Reset the device
@@ -4484,8 +4514,19 @@ where
         // Wait for reset to complete
         // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
         // Start-up time for register read/write is 11ms typical, 100ms max
-        // We use 100ms to ensure the device is fully ready
-        delay.delay_ms(100).await;
+        // We use polling to check when reset is done
+        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+            delay.delay_ms(POLL_INTERVAL_MS).await;
+            if self
+                .device
+                .pwr_mgmt_1()
+                .read_async()
+                .await
+                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+            {
+                break;
+            }
+        }
 
         // Wake up and select auto clock source
         self.device
@@ -4495,6 +4536,22 @@ where
                 w.set_clksel(1);
             })
             .await?;
+
+        // Wait and verify by checking we can read back the configuration correctly
+        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+            delay.delay_ms(POLL_INTERVAL_MS).await;
+            // Verify device is responding and configuration took effect
+            if self
+                .device
+                .pwr_mgmt_1()
+                .read_async()
+                .await
+                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+            {
+                // Device is awake, clock is set
+                return Ok(());
+            }
+        }
 
         Ok(())
     }

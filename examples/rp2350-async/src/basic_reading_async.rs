@@ -26,7 +26,7 @@ use embassy_rp::{
     i2c::{Config as I2cConfig, I2c, InterruptHandler as I2cInterruptHandler},
     peripherals::I2C0,
 };
-use embassy_time::{Delay, Timer};
+use embassy_time::{Delay, Instant, Timer};
 use icm20948::{
     AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale, I2cInterface,
     Icm20948Driver,
@@ -72,15 +72,16 @@ async fn main(_spawner: Spawner) {
 
     // Initialize the device with async delay
     let mut delay = Delay;
+    let start = Instant::now();
     if let Err(e) = imu.init(&mut delay).await {
         error!("Failed to initialize ICM-20948: {:?}", e);
         loop {
             Timer::after_millis(1000).await;
         }
     }
+    let duration = Instant::now() - start;
+    info!("Initialization took {} ms", duration.as_millis());
 
-    // Wait for device to stabilize after reset
-    Timer::after_millis(100).await;
     info!("ICM-20948 initialized successfully!");
 
     // Configure accelerometer: ±2g range, 246 Hz DLPF
