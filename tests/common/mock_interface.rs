@@ -511,6 +511,13 @@ impl RegisterInterface for MockInterface {
                 value: byte,
             });
 
+            // Simulate PWR_MGMT_1 device reset auto-clear
+            if current_bank == Bank::Bank0 && reg_addr == 0x06 && (byte & 0x80) != 0 {
+                state
+                    .registers
+                    .insert((current_bank, reg_addr), byte & !0x80);
+            }
+
             // Simulate I2C master slave 4 transaction when I2C_SLV4_CTRL is written (0x15)
             if current_bank == Bank::Bank3 && reg_addr == 0x15 {
                 state.simulate_i2c_slv4_transaction();
