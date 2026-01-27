@@ -159,6 +159,7 @@ where
 
         // Wait for reset to complete by polling device_reset bit
         // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
+        let mut reset_done = false;
         for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
             delay.delay_ms(POLL_INTERVAL_MS);
             if self
@@ -167,8 +168,13 @@ where
                 .read()
                 .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
             {
+                reset_done = true;
                 break;
             }
+        }
+
+        if !reset_done {
+            return Err(Error::InitializationTimeout);
         }
 
         // Wake up and select auto clock source
@@ -193,7 +199,7 @@ where
             }
         }
 
-        Ok(())
+        Err(Error::InitializationTimeout)
     }
 
     /// Enable SPI mode by disabling the I2C slave interface
@@ -4515,6 +4521,7 @@ where
         // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
         // Start-up time for register read/write is 11ms typical, 100ms max
         // We use polling to check when reset is done
+        let mut reset_done = false;
         for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
             delay.delay_ms(POLL_INTERVAL_MS).await;
             if self
@@ -4524,8 +4531,13 @@ where
                 .await
                 .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
             {
+                reset_done = true;
                 break;
             }
+        }
+
+        if !reset_done {
+            return Err(Error::InitializationTimeout);
         }
 
         // Wake up and select auto clock source
@@ -4553,7 +4565,7 @@ where
             }
         }
 
-        Ok(())
+        Err(Error::InitializationTimeout)
     }
 
     /// Select a register bank

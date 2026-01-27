@@ -84,6 +84,8 @@ pub enum Error<E> {
     CalibrationOverflow,
     /// FIFO buffer overflow - more records than can fit in output vector (max 64)
     FifoOverflow,
+    /// Initialization timed out (device did not reset or wake as expected)
+    InitializationTimeout,
 }
 
 impl<E> From<E> for Error<E> {
