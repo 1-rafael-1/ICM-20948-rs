@@ -25,6 +25,7 @@ struct MockAsyncI2c {
     fifo_data: [u8; 512],
     mag_initialized: bool,
     i2c_slv_4_di: u8, // I2C Slave 4 data in register
+    pwr_mgmt_1: u8,
 }
 
 impl MockAsyncI2c {
@@ -37,6 +38,7 @@ impl MockAsyncI2c {
             fifo_data: [0; 512],
             mag_initialized: false,
             i2c_slv_4_di: 0x09, // AK09916 WHO_AM_I value
+            pwr_mgmt_1: 0x00,
         }
     }
 
@@ -61,6 +63,7 @@ impl MockAsyncI2c {
             fifo_data: [0; 512],
             mag_initialized: false,
             i2c_slv_4_di: 0x09,
+            pwr_mgmt_1: 0x00,
         }
     }
 }
@@ -115,6 +118,14 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                     // REG_BANK_SEL register - bank switching
                     self.bank = value >> 4;
                 }
+                (0, 0x06) => {
+                    // PWR_MGMT_1 register
+                    self.pwr_mgmt_1 = value;
+                    // Simulate reset bit auto-clear
+                    if (value & 0x80) != 0 {
+                        self.pwr_mgmt_1 &= !0x80;
+                    }
+                }
                 (3, 0x07) => {
                     // BANK_3_I2C_SLV_4_CTRL - I2C Slave 4 control
                     // When enabled, simulate magnetometer WHO_AM_I read
@@ -150,6 +161,12 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                     // WHO_AM_I register
                     if !read.is_empty() {
                         read[0] = self.who_am_i_value;
+                    }
+                }
+                0x06 => {
+                    // PWR_MGMT_1 register
+                    if self.bank == 0 && !read.is_empty() {
+                        read[0] = self.pwr_mgmt_1;
                     }
                 }
                 0x70 => {
