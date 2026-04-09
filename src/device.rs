@@ -2327,11 +2327,12 @@ where
     ///
     /// # Errors
     /// Returns an error if communication with the device fails.
+    #[deprecated(since = "latest", note = "Incorrect implementation: ICM-20948 does not support distinguishing X/Y/Z axes for Wake-on-Motion.")]
     pub fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
         let status = self.device.data_rdy_status().read()?;
-        let bits = status.wof_status();
+        let bits = status.raw_data_rdy();
 
         Ok(WomStatus {
             x_motion: (bits & 0x01) != 0,
@@ -8035,11 +8036,12 @@ where
     ///
     /// # Errors
     /// Returns an error if communication with the device fails.
+    #[deprecated(since = "latest", note = "Incorrect implementation: ICM-20948 does not support distinguishing X/Y/Z axes for Wake-on-Motion.")]
     pub async fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
 
         let status = self.device.data_rdy_status().read_async().await?;
-        let bits = status.wof_status();
+        let bits = status.raw_data_rdy();
 
         Ok(WomStatus {
             x_motion: (bits & 0x01) != 0,
