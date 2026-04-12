@@ -22,14 +22,14 @@
 //! # use icm20948::dmp::parser::DmpParser;
 //! # let fifo_data = [0u8; 32];
 //! let parser = DmpParser::new();
-//! if let Some(data) = parser.parse_packet(&fifo_data) {
+//! if let Some((data, consumed)) = parser.parse_packet(&fifo_data) {
 //!     if let Some(quat) = data.quaternion_6axis {
 //!         println!("Quaternion: w={}, x={}, y={}, z={}", quat.w, quat.x, quat.y, quat.z);
 //!     }
 //! }
 //! ```
 
-use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+use crate::dmp::config::{DmpPacketHeader, DmpPacketHeader2, DmpPacketSize};
 use crate::dmp::{DmpData, Quaternion};
 
 /// DMP FIFO packet parser
@@ -39,6 +39,82 @@ impl DmpParser {
     /// Create a new DMP parser
     pub const fn new() -> Self {
         Self
+    }
+
+    /// Calculate the exact total packet size based on the parsed headers
+    ///
+    /// This allows the driver to know exactly how many bytes to read from the FIFO
+    /// without relying on external configuration states, preventing over-reads.
+    ///
+    /// # Arguments
+    ///
+    /// * `header` - Primary 16-bit packet header
+    /// * `header2` - Optional secondary 16-bit packet header (if HEADER2_BIT is set)
+    ///
+    /// # Returns
+    ///
+    /// Returns the exact size of the packet in bytes.
+    pub fn calculate_packet_size(header: u16, header2: Option<u16>) -> usize {
+        // Base packet size: Header + Footer
+        let mut size = DmpPacketSize::HEADER + DmpPacketSize::FOOTER;
+
+        // Add Header 2 and its payload if present
+        if header & DmpPacketHeader::HEADER2_BIT != 0 {
+            size += DmpPacketSize::HEADER2;
+
+            if let Some(h2) = header2 {
+                if h2 & DmpPacketHeader2::ACCEL_ACCURACY_BIT != 0 {
+                    size += DmpPacketSize::ACCEL_ACCURACY;
+                }
+                if h2 & DmpPacketHeader2::GYRO_ACCURACY_BIT != 0 {
+                    size += DmpPacketSize::GYRO_ACCURACY;
+                }
+                if h2 & DmpPacketHeader2::COMPASS_ACCURACY_BIT != 0 {
+                    size += DmpPacketSize::COMPASS_ACCURACY;
+                }
+                // Future expansion: Activity Recognition, Fsync, Pickup sizes
+            }
+        }
+
+        // Add payload sizes based on primary header bits in EXACT hardware order
+        if header & DmpPacketHeader::ACCEL_BIT != 0 {
+            size += DmpPacketSize::ACCEL_COMPASS; // 6 bytes
+        }
+        if header & DmpPacketHeader::GYRO_BIT != 0 {
+            size += DmpPacketSize::RAW_GYRO; // 12 bytes (Raw + Bias)
+        }
+        if header & DmpPacketHeader::COMPASS_BIT != 0 {
+            size += DmpPacketSize::ACCEL_COMPASS; // 6 bytes
+        }
+        if header & DmpPacketHeader::ALS_BIT != 0 {
+            size += DmpPacketSize::ALS;
+        }
+        if header & DmpPacketHeader::QUAT6_BIT != 0 {
+            size += DmpPacketSize::QUAT6; // 12 bytes
+        }
+        if header & DmpPacketHeader::QUAT9_BIT != 0 {
+            size += DmpPacketSize::QUAT9; // 14 bytes
+        }
+        if header & DmpPacketHeader::PQUAT6_BIT != 0 {
+            size += DmpPacketSize::PQUAT6;
+        }
+        if header & DmpPacketHeader::GEOMAG_BIT != 0 {
+            size += DmpPacketSize::QUAT9; // 14 bytes
+        }
+        if header & DmpPacketHeader::PRESSURE_BIT != 0 {
+            size += DmpPacketSize::PRESSURE;
+        }
+        // if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
+        //     size += DmpPacketSize::CAL_GYRO; // 12 bytes
+        // }
+        if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {
+            size += DmpPacketSize::CAL_COMPASS; // 12 bytes
+        }
+        if header & DmpPacketHeader::STEP_BIT != 0 {
+            size += DmpPacketSize::PEDOMETER; // 4 bytes
+        }
+
+        size
     }
 
     /// Parse a DMP packet from FIFO data
@@ -52,100 +128,279 @@ impl DmpParser {
     ///
     /// # Returns
     ///
-    /// Returns `Some(DmpData)` with the parsed data, or `None` if parsing failed.
-    pub fn parse_packet(&self, data: &[u8]) -> Option<DmpData> {
+    /// Returns `Some((DmpData, usize))` with the parsed data and the number of
+    /// bytes consumed, or `None` if parsing failed.
+    /// Parse a DMP packet from FIFO data
+    pub fn parse_packet(&self, data: &[u8]) -> Option<(DmpData, usize)> {
         if data.len() < DmpPacketSize::HEADER {
             return None;
         }
 
         // Parse header (big-endian 16-bit)
         let header = u16::from_be_bytes([data[0], data[1]]);
-
         let mut dmp_data = DmpData::default();
         let mut offset = DmpPacketSize::HEADER;
 
-        // Parse quaternion data if present
-        if header & DmpPacketHeader::QUAT6_BIT != 0 {
-            if let Some(quat) = self.parse_quaternion(&data[offset..]) {
-                dmp_data.quaternion_6axis = Some(quat);
-                offset += DmpPacketSize::QUATERNION;
+        // Parse Header 2 if present
+        let mut header2 = 0;
+        if header & DmpPacketHeader::HEADER2_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::HEADER2 {
+                return None;
             }
-        } else if header & DmpPacketHeader::QUAT9_BIT != 0 {
-            if let Some(quat) = self.parse_quaternion(&data[offset..]) {
-                dmp_data.quaternion_9axis = Some(quat);
-                offset += DmpPacketSize::QUATERNION;
-            }
+            header2 = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            offset += DmpPacketSize::HEADER2;
         }
 
-        // Parse raw accelerometer if present
+        // 1. Parse raw accelerometer (6 bytes)
         if header & DmpPacketHeader::ACCEL_BIT != 0 {
-            if let Some(accel) = self.parse_accel_gyro(&data[offset..]) {
-                dmp_data.raw_accel = Some(accel);
-                offset += DmpPacketSize::ACCEL_GYRO;
+            if data.len() < offset + DmpPacketSize::ACCEL_COMPASS {
+                return None;
             }
+            dmp_data.raw_accel = self.parse_accel_gyro(&data[offset..]);
+            offset += DmpPacketSize::ACCEL_COMPASS;
         }
 
-        // Parse raw gyroscope if present
+        // 2. Parse raw gyroscope & bias (12 bytes)
         if header & DmpPacketHeader::GYRO_BIT != 0 {
-            if let Some(gyro) = self.parse_accel_gyro(&data[offset..]) {
-                dmp_data.raw_gyro = Some(gyro);
-                offset += DmpPacketSize::ACCEL_GYRO;
+            if data.len() < offset + DmpPacketSize::RAW_GYRO {
+                return None;
+            }
+
+            // First 6 bytes are Raw Gyro
+            dmp_data.raw_gyro = self.parse_accel_gyro(&data[offset..]);
+
+            // Next 6 bytes are Gyro Bias
+            dmp_data.gyro_bias = self.parse_accel_gyro(&data[offset + 6..]);
+
+            if let (Some(raw_gyro), Some(gyro_bias)) = (dmp_data.raw_gyro, dmp_data.gyro_bias) {
+                dmp_data.calibrated_gyro = Some((
+                    raw_gyro.0 - gyro_bias.0,
+                    raw_gyro.1 - gyro_bias.1,
+                    raw_gyro.2 - gyro_bias.2,
+                ));
+            }
+
+            offset += DmpPacketSize::RAW_GYRO;
+        }
+
+        // 3. Parse raw compass / magnetometer (6 bytes)
+        if header & DmpPacketHeader::COMPASS_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::ACCEL_COMPASS {
+                return None;
+            }
+            dmp_data.raw_mag = self.parse_accel_gyro(&data[offset..]);
+            offset += DmpPacketSize::ACCEL_COMPASS;
+        }
+
+        // 4. ALS (Ambient Light Sensor) - Skip 8 bytes
+        if header & DmpPacketHeader::ALS_BIT != 0 {
+            offset += DmpPacketSize::ALS;
+        }
+
+        // 5. Parse 6-axis quaternion (12 bytes)
+        if header & DmpPacketHeader::QUAT6_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::QUAT6 {
+                return None;
+            }
+            let q = self.parse_quaternion6(&data[offset..]);
+            // Map to generic 6-axis quat (serves QUATERNION_6AXIS, GAME_RV, GRAVITY, LINEAR_ACCEL)
+            dmp_data.quaternion_6axis = q;
+            offset += DmpPacketSize::QUAT6;
+        }
+
+        // 6. Parse 9-axis quaternion (14 bytes)
+        if header & DmpPacketHeader::QUAT9_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::QUAT9 {
+                return None;
+            }
+            if let Some((quat, accuracy)) = self.parse_quaternion9(&data[offset..]) {
+                dmp_data.quaternion_9axis = Some(quat);
+                dmp_data.heading_accuracy = Some(accuracy);
+            }
+            offset += DmpPacketSize::QUAT9;
+        }
+
+        // 7. PQuat6 (Pedometer Quaternion)
+        if header & DmpPacketHeader::PQUAT6_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::PQUAT6 {
+                return None;
+            }
+            dmp_data.pedometer_quaternion = self.parse_pquat6(&data[offset..]);
+            offset += DmpPacketSize::PQUAT6;
+        }
+
+        // 8. Geomagnetic Rotation Vector (14 bytes)
+        if header & DmpPacketHeader::GEOMAG_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::QUAT9 {
+                return None;
+            }
+            if let Some((quat, accuracy)) = self.parse_quaternion9(&data[offset..]) {
+                dmp_data.geomag_rotation_vector = Some(quat);
+                dmp_data.heading_accuracy = Some(accuracy);
+            }
+            offset += DmpPacketSize::QUAT9;
+        }
+
+        // 9. Pressure - Skip 6 bytes
+        if header & DmpPacketHeader::PRESSURE_BIT != 0 {
+            offset += DmpPacketSize::PRESSURE;
+        }
+
+        // 10. Calibrated Gyroscope (12 bytes)
+        // if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
+        //     if data.len() < offset + DmpPacketSize::CAL_GYRO {
+        //         return None;
+        //     }
+        //     dmp_data.calibrated_gyro = self.parse_calibrated_gyro(&data[offset..]);
+        //     offset += DmpPacketSize::CAL_GYRO;
+        // }
+
+        // 11. Calibrated Compass (12 bytes)
+        if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::CAL_COMPASS {
+                return None;
+            }
+            dmp_data.calibrated_mag = self.parse_calibrated_gyro(&data[offset..]);
+            offset += DmpPacketSize::CAL_COMPASS;
+        }
+
+        // 12. Pedometer Step Detector (4 bytes)
+        if header & DmpPacketHeader::STEP_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::PEDOMETER {
+                return None;
+            }
+            let timestamp = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
+            dmp_data.pedometer_timestamp = Some(timestamp);
+            offset += DmpPacketSize::PEDOMETER;
+        }
+
+        // --- Process Header 2 Fields (Accuracies & Events) ---
+        if header2 != 0 {
+            if header2 & DmpPacketHeader2::ACCEL_ACCURACY_BIT != 0 {
+                if data.len() < offset + DmpPacketSize::ACCEL_ACCURACY {
+                    return None;
+                }
+                dmp_data.accel_accuracy =
+                    Some(u16::from_be_bytes([data[offset], data[offset + 1]]));
+                offset += DmpPacketSize::ACCEL_ACCURACY;
+            }
+            if header2 & DmpPacketHeader2::GYRO_ACCURACY_BIT != 0 {
+                if data.len() < offset + DmpPacketSize::GYRO_ACCURACY {
+                    return None;
+                }
+                dmp_data.gyro_accuracy = Some(u16::from_be_bytes([data[offset], data[offset + 1]]));
+                offset += DmpPacketSize::GYRO_ACCURACY;
+            }
+            if header2 & DmpPacketHeader2::COMPASS_ACCURACY_BIT != 0 {
+                if data.len() < offset + DmpPacketSize::COMPASS_ACCURACY {
+                    return None;
+                }
+                dmp_data.compass_accuracy =
+                    Some(u16::from_be_bytes([data[offset], data[offset + 1]]));
+                offset += DmpPacketSize::COMPASS_ACCURACY;
             }
         }
 
-        // Parse calibrated accelerometer if present
-        if header & DmpPacketHeader::CAL_ACCEL_BIT != 0 {
-            if let Some(accel) = self.parse_accel_gyro(&data[offset..]) {
-                dmp_data.calibrated_accel = Some(accel);
-                offset += DmpPacketSize::ACCEL_GYRO;
-            }
+        // Final packet footer (Every DMP packet ends with a 2-byte Gyro count footer)
+        if data.len() < offset + DmpPacketSize::FOOTER {
+            return None;
         }
+        offset += DmpPacketSize::FOOTER;
 
-        // Parse calibrated gyroscope if present (32-bit values)
-        if header & DmpPacketHeader::CAL_GYRO_BIT != 0 {
-            if let Some(gyro) = self.parse_calibrated_gyro(&data[offset..]) {
-                dmp_data.calibrated_gyro = Some(gyro);
-                // offset not used after this point
-            }
-        }
-
-        Some(dmp_data)
+        Some((dmp_data, offset))
     }
 
     /// Parse quaternion from Q30 fixed-point format
     ///
-    /// The DMP outputs quaternions as 4 × 32-bit signed integers in Q30 format.
+    /// The DMP outputs quaternions as 3 × 32-bit signed integers (X, Y, Z) in Q30 format.
+    /// The W (scalar) component is omitted to save FIFO space and must be calculated by the host.
     /// Q30 means the value has 30 fractional bits, so to convert to float:
     /// `float_value` = `int_value` / 2^30
     ///
+    /// The W component is calculated using the property that a unit quaternion's
+    /// magnitude is exactly 1.0: W = sqrt(1.0 - (X^2 + Y^2 + Z^2)).
+    ///
     /// # Arguments
     ///
-    /// * `data` - At least 16 bytes containing quaternion data (w, x, y, z)
+    /// * `data` - At least 12 bytes containing quaternion data (x, y, z)
     ///
     /// # Returns
     ///
     /// Returns `Some(Quaternion)` if parsing succeeded, `None` if data too short.
-    fn parse_quaternion(&self, data: &[u8]) -> Option<Quaternion> {
-        if data.len() < DmpPacketSize::QUATERNION {
+    pub(crate) fn parse_quaternion6(&self, data: &[u8]) -> Option<Quaternion> {
+        if data.len() < DmpPacketSize::QUAT6 {
             return None;
         }
 
-        // Extract 4 × 32-bit values (big-endian)
-        let qw = i32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let qx = i32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        let qy = i32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-        let qz = i32::from_be_bytes([data[12], data[13], data[14], data[15]]);
+        // Extract 3 × 32-bit values (big-endian)
+        let qx = i32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let qy = i32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let qz = i32::from_be_bytes([data[8], data[9], data[10], data[11]]);
 
         // Convert from Q30 to float
         // Q30: 1 bit sign, 1 bit integer, 30 bits fractional
         const Q30_DIVISOR: f32 = 1_073_741_824.0; // 2^30
 
-        Some(Quaternion {
-            w: qw as f32 / Q30_DIVISOR,
-            x: qx as f32 / Q30_DIVISOR,
-            y: qy as f32 / Q30_DIVISOR,
-            z: qz as f32 / Q30_DIVISOR,
-        })
+        let x = (qx as f32) / Q30_DIVISOR;
+        let y = (qy as f32) / Q30_DIVISOR;
+        let z = (qz as f32) / Q30_DIVISOR;
+
+        let w_sq = 1.0 - (x * x + y * y + z * z);
+        let w = if w_sq > 0.0 { libm::sqrtf(w_sq) } else { 0.0 };
+
+        Some(Quaternion { w, x, y, z })
+    }
+
+    /// Parse quaternion and accuracy from Q30 fixed-point format (9-byte variant)
+    ///
+    /// This function parses a quaternion from the first 12 bytes of data using the same Q30
+    /// conversion as [`parse_quaternion6`], then extracts an additional 2-byte accuracy value.
+    /// The accuracy value is a raw unsigned 16-bit integer provided by the DMP, which may
+    /// represent a confidence metric or sensor fusion quality.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - At least 14 bytes containing quaternion data (x, y, z) plus accuracy word
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some((quaternion, accuracy))` if parsing succeeded, where `accuracy` is the
+    /// raw 16-bit value converted to `f32`. Returns `None` if the data slice is too short.
+    pub(crate) fn parse_quaternion9(&self, data: &[u8]) -> Option<(Quaternion, f32)> {
+        if data.len() < DmpPacketSize::QUAT9 {
+            return None;
+        }
+        let quat = self.parse_quaternion6(data)?;
+        let accuracy_raw = u16::from_be_bytes([data[12], data[13]]);
+        Some((quat, accuracy_raw as f32))
+    }
+
+    /// Parse 16-bit compressed quaternion (PQUAT6)
+    pub(crate) fn parse_pquat6(&self, data: &[u8]) -> Option<Quaternion> {
+        if data.len() < 6 {
+            return None;
+        }
+
+        // PQUAT6 提取 3 × 16-bit values (big-endian)
+        let qx = i16::from_be_bytes([data[0], data[1]]);
+        let qy = i16::from_be_bytes([data[2], data[3]]);
+        let qz = i16::from_be_bytes([data[4], data[5]]);
+
+        const Q14_DIVISOR: f32 = 16384.0; // 2^14
+
+        let x = (qx as f32) / Q14_DIVISOR;
+        let y = (qy as f32) / Q14_DIVISOR;
+        let z = (qz as f32) / Q14_DIVISOR;
+
+        let w_sq = 1.0 - (x * x + y * y + z * z);
+        let w = if w_sq > 0.0 { libm::sqrtf(w_sq) } else { 0.0 };
+
+        Some(Quaternion { w, x, y, z })
     }
 
     /// Parse 3-axis accelerometer or gyroscope data (16-bit)
@@ -160,7 +415,7 @@ impl DmpParser {
     ///
     /// Returns `Some((x, y, z))` if parsing succeeded, `None` if data too short.
     fn parse_accel_gyro(&self, data: &[u8]) -> Option<(i16, i16, i16)> {
-        if data.len() < DmpPacketSize::ACCEL_GYRO {
+        if data.len() < DmpPacketSize::ACCEL_COMPASS {
             return None;
         }
 
@@ -241,19 +496,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_quaternion_identity() {
+    fn test_parse_quaternion6_identity() {
         let parser = DmpParser::new();
 
-        // Q30 format: 1.0 = 2^30 = 0x40000000
+        // Q30 format: 0 = 0x00000000
         // Identity quaternion: w=1, x=0, y=0, z=0
+        // parse_quaternion6 only reads X,Y,Z (12 bytes) and computes W.
         let data = [
-            0x40, 0x00, 0x00, 0x00, // w = 1.0
             0x00, 0x00, 0x00, 0x00, // x = 0.0
             0x00, 0x00, 0x00, 0x00, // y = 0.0
             0x00, 0x00, 0x00, 0x00, // z = 0.0
         ];
 
-        let quat = parser.parse_quaternion(&data).unwrap();
+        let quat = parser.parse_quaternion6(&data).unwrap();
 
         assert!((quat.w - 1.0).abs() < 0.001);
         assert!((quat.x - 0.0).abs() < 0.001);
@@ -262,23 +517,40 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_quaternion_half() {
+    fn test_parse_quaternion6_half() {
         let parser = DmpParser::new();
 
-        // Q30 format: 0.5 = 2^29 = 0x20000000
+        // Q30: 0.5 = 2^29 = 0x20000000
         let data = [
-            0x20, 0x00, 0x00, 0x00, // w = 0.5
             0x20, 0x00, 0x00, 0x00, // x = 0.5
             0x20, 0x00, 0x00, 0x00, // y = 0.5
             0x20, 0x00, 0x00, 0x00, // z = 0.5
         ];
 
-        let quat = parser.parse_quaternion(&data).unwrap();
+        let quat = parser.parse_quaternion6(&data).unwrap();
 
+        // w = sqrt(1 - 3*(0.5^2)) = sqrt(1 - 0.75) = sqrt(0.25) = 0.5
         assert!((quat.w - 0.5).abs() < 0.001);
         assert!((quat.x - 0.5).abs() < 0.001);
         assert!((quat.y - 0.5).abs() < 0.001);
         assert!((quat.z - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_quaternion9() {
+        let parser = DmpParser::new();
+
+        // X=0, Y=0, Z=0, accuracy = 1234
+        let data = [
+            0x00, 0x00, 0x00, 0x00, // x = 0
+            0x00, 0x00, 0x00, 0x00, // y = 0
+            0x00, 0x00, 0x00, 0x00, // z = 0
+            0x04, 0xD2, // accuracy = 1234
+        ];
+
+        let (quat, acc) = parser.parse_quaternion9(&data).unwrap();
+        assert!((quat.w - 1.0).abs() < 0.001);
+        assert_eq!(acc, 1234.0);
     }
 
     #[test]
@@ -321,45 +593,72 @@ mod tests {
     fn test_parse_packet_quat6() {
         let parser = DmpParser::new();
 
-        // Packet: header (QUAT6_BIT) + identity quaternion
+        // Packet: header (QUAT6_BIT = 0x0800) + 12-byte identity quaternion + 2-byte footer
         let data = [
-            0x00, 0x01, // Header: QUAT6_BIT
-            0x40, 0x00, 0x00, 0x00, // w = 1.0
-            0x00, 0x00, 0x00, 0x00, // x = 0.0
-            0x00, 0x00, 0x00, 0x00, // y = 0.0
-            0x00, 0x00, 0x00, 0x00, // z = 0.0
+            0x08, 0x00, // Header: QUAT6_BIT
+            // X, Y, Z (all zero)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, // Footer (any value)
         ];
 
-        let dmp_data = parser.parse_packet(&data).unwrap();
+        let (dmp_data, consumed) = parser.parse_packet(&data).unwrap();
+        assert_eq!(consumed, data.len());
 
         assert!(dmp_data.quaternion_6axis.is_some());
         let quat = dmp_data.quaternion_6axis.unwrap();
         assert!((quat.w - 1.0).abs() < 0.001);
+        assert!((quat.x - 0.0).abs() < 0.001);
+        assert!((quat.y - 0.0).abs() < 0.001);
+        assert!((quat.z - 0.0).abs() < 0.001);
     }
 
     #[test]
     fn test_parse_packet_with_accel_gyro() {
         let parser = DmpParser::new();
 
-        // Packet: header + quaternion + accel + gyro
-        let data = [
-            0x00, 0x0D, // Header: QUAT6_BIT | ACCEL_BIT | GYRO_BIT
-            // Quaternion (16 bytes)
-            0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, // Accel (6 bytes)
-            0x00, 0x64, 0x00, 0xC8, 0x01, 0x2C, // Gyro (6 bytes)
-            0x00, 0x0A, 0x00, 0x14, 0x00, 0x1E,
-        ];
+        // Header: QUAT6_BIT (0x0800) | ACCEL_BIT (0x8000) | GYRO_BIT (0x4000) = 0xC800
+        let header =
+            DmpPacketHeader::QUAT6_BIT | DmpPacketHeader::ACCEL_BIT | DmpPacketHeader::GYRO_BIT;
+        let header_bytes = header.to_be_bytes();
 
-        let dmp_data = parser.parse_packet(&data).unwrap();
+        // Quaternion (X,Y,Z all zero)
+        let quat_data = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        // Accel: (100, 200, 300)
+        let accel_data = [
+            0x00, 0x64, // x = 100
+            0x00, 0xC8, // y = 200
+            0x01, 0x2C, // z = 300
+        ];
+        // Gyro: (10, 20, 30)
+        let gyro_data = [
+            0x00, 0x0A, // x = 10
+            0x00, 0x14, // y = 20
+            0x00, 0x1E, // z = 30
+        ];
+        // Footer (2 bytes)
+        let footer = [0x00, 0x00];
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&header_bytes);
+        data.extend_from_slice(&quat_data);
+        data.extend_from_slice(&accel_data);
+        data.extend_from_slice(&gyro_data);
+        data.extend_from_slice(&footer);
+
+        let (dmp_data, consumed) = parser.parse_packet(&data).unwrap();
+        assert_eq!(consumed, data.len());
 
         assert!(dmp_data.quaternion_6axis.is_some());
-        assert!(dmp_data.raw_accel.is_some());
-        assert!(dmp_data.raw_gyro.is_some());
+        let quat = dmp_data.quaternion_6axis.unwrap();
+        assert!((quat.w - 1.0).abs() < 0.001);
 
+        assert!(dmp_data.raw_accel.is_some());
         let (ax, ay, az) = dmp_data.raw_accel.unwrap();
         assert_eq!((ax, ay, az), (100, 200, 300));
 
+        assert!(dmp_data.raw_gyro.is_some());
         let (gx, gy, gz) = dmp_data.raw_gyro.unwrap();
         assert_eq!((gx, gy, gz), (10, 20, 30));
     }
@@ -368,18 +667,18 @@ mod tests {
     fn test_extract_header() {
         let parser = DmpParser::new();
 
-        let data = [0x00, 0x01, 0xFF, 0xFF];
+        let data = [0x08, 0x00, 0xFF, 0xFF];
         let header = parser.extract_header(&data).unwrap();
 
-        assert_eq!(header, 0x0001);
+        assert_eq!(header, 0x0800);
     }
 
     #[test]
     fn test_validate_header() {
         let parser = DmpParser::new();
 
-        assert!(parser.validate_header(0x0001));
-        assert!(parser.validate_header(0x00FF));
+        assert!(parser.validate_header(0x0800)); // QUAT6_BIT
+        assert!(parser.validate_header(0x8000)); // ACCEL_BIT
         assert!(!parser.validate_header(0x0000));
         assert!(parser.validate_header(0x7FFF));
     }

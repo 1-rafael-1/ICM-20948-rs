@@ -57,6 +57,7 @@ Each example includes documentation in its source file. Check the file's doc com
 ```bash
 cargo run --release --bin wake_on_motion_async
 cargo run --release --bin hardware_interrupt_async
+cargo run --release --bin dmp_integration_async
 ```
 
 ## Troubleshooting

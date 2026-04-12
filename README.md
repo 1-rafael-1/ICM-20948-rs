@@ -51,9 +51,9 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 - ✅ **Optional defmt support** - Logging support for embedded debugging
 
 ### Known Limitations
-- ❌ **DMP (Digital Motion Processor)** - Not functional despite extensive attempts. Use software sensor fusion instead.
+- ⚠️ **DMP (Digital Motion Processor)** - API not yet stable. Use software sensor fusion instead.
 
-## Usage
+## Usagejingg
 
 Add this to your `Cargo.toml`:
 
@@ -200,10 +200,10 @@ All tests run automatically on every push and pull request.
 - [x] Power management (sleep, low-power, cycle modes)
 - [x] Hardware self-test (accelerometer, gyroscope, magnetometer with internal test signals)
 
-### Known Non-Functional Features ❌
+### Known Non-Functional Features ⚠️
 **Digital Motion Processor (DMP):**
 - Firmware loading implementation exists (behind `dmp` feature flag)
-- **Status:** Not functional despite extensive tinkering
+- **Status:** Awaiting data verification; API not yet stable
 - **Recommendation:** Use software sensor fusion (see `ahrs_euler.rs` example) instead
 - DMP code remains in codebase for reference only
 

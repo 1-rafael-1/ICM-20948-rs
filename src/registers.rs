@@ -188,6 +188,38 @@ device_driver::create_device!(
             reserved_7_5: uint = 5..8,
         },
 
+        /// INT_ENABLE_GROUP - Combined Interrupt Enable Registers (Bank 0, 0x10..0x13)
+        register IntEnableGroup {
+            const ADDRESS = 0x10;
+            const SIZE_BITS = 32;
+            const ALLOW_ADDRESS_OVERLAP = true;
+
+            /// FIFO watermark interrupt enable (5 bits, bits 4:0)
+            fifo_wm_en: uint = 0..4,
+            reserved3: uint = 5..7,
+
+            /// FIFO overflow interrupt enable (5 bits, bits 4:0)
+            fifo_overflow_en: uint = 8..12,
+            reserved2: uint = 13..15,
+
+            /// Raw data ready interrupt enable
+            raw_data_0_rdy_en: bool = 16,
+            reserved1: uint = 17..23,
+
+            /// I2C master interrupt enable
+            i2c_mst_int_en: bool = 24,
+            /// DMP interrupt enable
+            dmp_int1_en: bool = 25,
+            /// PLL ready interrupt enable
+            pll_rdy_en: bool = 26,
+            /// WoM (Wake on Motion) interrupt enable
+            wom_int_en: bool = 27,
+            /// Reserved bits 30..28 (3 bits)
+            reserved0: uint = 28..30,
+            /// Enable wake on FSYNC interrupt
+            reg_wof_en: bool = 31,
+        },
+
         /// I2C_MST_STATUS - I2C Master Status (Bank 0, 0x17)
         register I2cMstStatus {
             const ADDRESS = 0x17;
@@ -260,6 +292,34 @@ device_driver::create_device!(
             /// FIFO watermark interrupt status (bits 4:0)
             fifo_wm_int: uint = 0..5,
             reserved_7_5: uint = 5..8,
+        },
+
+        register IntStatusGroup {
+            const ADDRESS = 0x19;
+            const SIZE_BITS = 32;
+            const ALLOW_ADDRESS_OVERLAP = true;
+
+            /// FIFO watermark interrupt status (5 bits)
+            fifo_wm_int: uint = 0..5,
+            reserved3: uint = 5..8,
+
+            /// FIFO overflow interrupt status (5 bits)
+            fifo_overflow_int: uint = 8..13,
+            reserved2: uint = 13..16,
+
+            /// Raw data ready interrupt
+            raw_data_0_rdy_int: bool = 16,
+            reserved1: uint = 17..24,
+
+            /// I2C master interrupt
+            i2c_mst_int: bool = 24,
+            /// DMP interrupt
+            dmp_int1: bool = 25,
+            /// PLL ready interrupt
+            pll_rdy_int: bool = 26,
+            /// WoM interrupt
+            wom_int: bool = 27,
+            reserved0: uint = 28..32,
         },
 
         /// SINGLE_FIFO_PRIORITY_SEL - Single FIFO Priority Select (Bank 0, 0x26)
@@ -753,6 +813,16 @@ device_driver::create_device!(
             fifo_cnt_l: uint = 0..8,
         },
 
+        register FifoCount {
+            const ADDRESS = 0x70;
+            const SIZE_BITS = 16;
+            const ALLOW_ADDRESS_OVERLAP = true;
+
+            /// FIFO count
+            count: uint = 0..13,
+            reserved: uint = 13..16,
+        },
+
         /// FIFO_R_W - FIFO Read/Write (Bank 0, 0x72)
         register FifoRW {
             const ADDRESS = 0x72;
@@ -974,7 +1044,7 @@ device_driver::create_device!(
             const ALLOW_ADDRESS_OVERLAP = true;
 
             /// PLL timebase correction
-            timebase_correction_pll: uint = 0..8,
+            timebase_correction_pll: int = 0..8,
         },
 
         // ==================== BANK 2 REGISTERS ====================
@@ -1113,6 +1183,16 @@ device_driver::create_device!(
             prgm_start_addrl: uint = 0..8,
         },
 
+        /// PRGM_START_ADDR - DMP Program Start Address (Bank 2, 0x50..0x51)
+        register Bank2PrgmStartAddr {
+            const ADDRESS = 0x50;
+            const SIZE_BITS = 16;
+            const ALLOW_ADDRESS_OVERLAP = true;
+
+            /// DMP program start address high byte
+            prgm_start_addr: uint = 0..16,
+        },
+
         /// ACCEL_SMPLRT_DIV_1 (Bank 2, 0x10)
         register Bank2AccelSmplrtDiv1 {
             const ADDRESS = 0x10;
@@ -1132,6 +1212,17 @@ device_driver::create_device!(
 
             /// Accelerometer sample rate divider low byte
             accel_smplrt_div_2: uint = 0..8,
+        },
+
+        /// ACCEL_SMPLRT_DIV (Bank 2, 0x10..0x11)
+        register Bank2AccelSmplrtDiv {
+            const ADDRESS = 0x10;
+            const SIZE_BITS = 16;
+            const ALLOW_ADDRESS_OVERLAP = true;
+
+            /// Accelerometer sample rate divider (12-bit)
+            accel_smplrt_div: uint = 0..12,
+            reserved_15_12: uint = 12..16,
         },
 
         /// ACCEL_INTEL_CTRL (Bank 2, 0x12)

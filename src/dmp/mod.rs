@@ -69,11 +69,10 @@ pub mod parser;
 // Re-export common items
 pub use config::{
     ArbitrarySampleRate, ConfigSequence, DmpFeatures, DmpMemoryAddresses, DmpPacketHeader,
-    DmpSampleRate, calculate_gyro_sf,
+    DmpPacketHeader2, DmpSampleRate, calculate_gyro_sf,
 };
 pub use firmware::{
-    DMP_FIRMWARE, DMP_FIRMWARE_SIZE, DMP_MEM_BANK_SEL, DMP_MEM_R_W, DMP_MEM_START_ADDR,
-    DMP_START_ADDRESS,
+    DMP_FIRMWARE, DMP_MEM_BANK_SEL, DMP_MEM_R_W, DMP_MEM_START_ADDR, DMP_START_ADDRESS,
 };
 pub use loader::{DMP_LOAD_DELAY_US, DmpInitializer, FirmwareLoader};
 pub use parser::DmpParser;
@@ -85,11 +84,11 @@ pub struct DmpConfig {
     /// Enable 6-axis quaternion (accel + gyro)
     pub quaternion_6axis: bool,
 
+    /// Enable 6-axis Pedometer quaternion (accel + gyro)
+    pub quaternion_p6axis: bool,
+
     /// Enable 9-axis quaternion (accel + gyro + mag)
     pub quaternion_9axis: bool,
-
-    /// Enable game rotation vector (6-axis without mag drift)
-    pub game_rotation_vector: bool,
 
     /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
     pub geomag_rotation_vector: bool,
@@ -112,6 +111,23 @@ pub struct DmpConfig {
     /// Enable raw magnetometer output from DMP
     pub raw_mag: bool,
 
+    /// Enable pedometer step detector (triggers an event on step)
+    pub step_detector: bool,
+
+    /// Enable pedometer step counter (tracks total steps)
+    pub step_counter: bool,
+
+    // /// Enable significant motion detection (triggers on significant movement)
+    // pub significant_motion: bool,
+
+    // /// Enable tilt detector
+    // pub tilt_detector: bool,
+
+    // /// Enable pickup/flip detector
+    // pub pickup_detector: bool,
+
+    // /// Enable activity classification (e.g., walk, run, bike, still)
+    // pub activity_classification: bool,
     /// DMP sample rate (Hz)
     /// Valid range depends on sensor configuration, typically 1-225 Hz
     pub sample_rate: u16,
@@ -121,8 +137,8 @@ impl Default for DmpConfig {
     fn default() -> Self {
         Self {
             quaternion_6axis: false,
+            quaternion_p6axis: false,
             quaternion_9axis: true, // Most common use case
-            game_rotation_vector: false,
             geomag_rotation_vector: false,
             calibrated_accel: false,
             calibrated_gyro: false,
@@ -130,6 +146,12 @@ impl Default for DmpConfig {
             raw_accel: false,
             raw_gyro: false,
             raw_mag: false,
+            step_detector: false,
+            step_counter: false,
+            // significant_motion: false,
+            // tilt_detector: false,
+            // pickup_detector: false,
+            // activity_classification: false,
             sample_rate: 100, // 100 Hz is a good default
         }
     }
@@ -140,8 +162,8 @@ impl DmpConfig {
     pub fn new() -> Self {
         Self {
             quaternion_6axis: false,
+            quaternion_p6axis: false,
             quaternion_9axis: false,
-            game_rotation_vector: false,
             geomag_rotation_vector: false,
             calibrated_accel: false,
             calibrated_gyro: false,
@@ -149,6 +171,12 @@ impl DmpConfig {
             raw_accel: false,
             raw_gyro: false,
             raw_mag: false,
+            step_detector: false,
+            step_counter: false,
+            // significant_motion: false,
+            // tilt_detector: false,
+            // pickup_detector: false,
+            // activity_classification: false,
             sample_rate: 100,
         }
     }
@@ -159,15 +187,15 @@ impl DmpConfig {
         self
     }
 
-    /// Enable 9-axis quaternion output (accel + gyro + mag)
-    pub fn with_quaternion_9axis(mut self, enable: bool) -> Self {
-        self.quaternion_9axis = enable;
+    /// Enable 6-axis Pedometer quaternion (accel + gyro)
+    pub fn with_quaternion_p6axis(mut self, enable: bool) -> Self {
+        self.quaternion_p6axis = enable;
         self
     }
 
-    /// Enable game rotation vector (6-axis without magnetometer drift)
-    pub fn with_game_rotation_vector(mut self, enable: bool) -> Self {
-        self.game_rotation_vector = enable;
+    /// Enable 9-axis quaternion output (accel + gyro + mag)
+    pub fn with_quaternion_9axis(mut self, enable: bool) -> Self {
+        self.quaternion_9axis = enable;
         self
     }
 
@@ -194,6 +222,60 @@ impl DmpConfig {
         self.calibrated_mag = enable;
         self
     }
+
+    /// Enable raw accelerometer output from DMP
+    pub fn with_raw_accel(mut self, enable: bool) -> Self {
+        self.raw_accel = enable;
+        self
+    }
+
+    /// Enable raw gyroscope output from DMP
+    pub fn with_raw_gyro(mut self, enable: bool) -> Self {
+        self.raw_gyro = enable;
+        self
+    }
+
+    /// Enable raw magnetometer output from DMP
+    pub fn with_raw_mag(mut self, enable: bool) -> Self {
+        self.raw_mag = enable;
+        self
+    }
+
+    /// Enable pedometer step detector
+    pub fn with_step_detector(mut self, enable: bool) -> Self {
+        self.step_detector = enable;
+        self
+    }
+
+    /// Enable pedometer step counter
+    pub fn with_step_counter(mut self, enable: bool) -> Self {
+        self.step_counter = enable;
+        self
+    }
+
+    // /// Enable significant motion detection
+    // pub fn with_significant_motion(mut self, enable: bool) -> Self {
+    //     self.significant_motion = enable;
+    //     self
+    // }
+
+    // /// Enable tilt detector
+    // pub fn with_tilt_detector(mut self, enable: bool) -> Self {
+    //     self.tilt_detector = enable;
+    //     self
+    // }
+
+    // /// Enable pickup/flip detector
+    // pub fn with_pickup_detector(mut self, enable: bool) -> Self {
+    //     self.pickup_detector = enable;
+    //     self
+    // }
+
+    // /// Enable activity classification
+    // pub fn with_activity_classification(mut self, enable: bool) -> Self {
+    //     self.activity_classification = enable;
+    //     self
+    // }
 
     /// Set DMP sample rate in Hz
     pub fn with_sample_rate(mut self, rate: u16) -> Self {
@@ -300,14 +382,14 @@ impl EulerAngles {
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DmpData {
-    /// 6-axis quaternion (accel + gyro)
+    /// 6-axis quaternion (accel + gyro)/ Game rotation vector / GRAVITY / LINEAR_ACCEL
     pub quaternion_6axis: Option<Quaternion>,
+
+    /// PQuat6 (Pedometer Quaternion)
+    pub pedometer_quaternion: Option<Quaternion>,
 
     /// 9-axis quaternion (accel + gyro + mag)
     pub quaternion_9axis: Option<Quaternion>,
-
-    /// Game rotation vector
-    pub game_rotation_vector: Option<Quaternion>,
 
     /// Geomagnetic rotation vector
     pub geomag_rotation_vector: Option<Quaternion>,
@@ -319,7 +401,7 @@ pub struct DmpData {
     pub calibrated_accel: Option<(i16, i16, i16)>,
 
     /// Calibrated gyroscope data
-    pub calibrated_gyro: Option<(i32, i32, i32)>,
+    pub calibrated_gyro: Option<(i16, i16, i16)>,
 
     /// Calibrated magnetometer data
     pub calibrated_mag: Option<(i32, i32, i32)>,
@@ -332,6 +414,22 @@ pub struct DmpData {
 
     /// Raw magnetometer data from DMP
     pub raw_mag: Option<(i16, i16, i16)>,
+
+    /// Gyroscope bias data from DMP (dynamically calculated zero-offset)
+    /// Only available when `raw_gyro` output is enabled.
+    pub gyro_bias: Option<(i16, i16, i16)>,
+
+    /// Accelerometer accuracy status from DMP (0=unreliable, 3=high accuracy)
+    pub accel_accuracy: Option<u16>,
+
+    /// Gyroscope accuracy status from DMP (0=unreliable, 3=high accuracy)
+    pub gyro_accuracy: Option<u16>,
+
+    /// Compass/Magnetometer accuracy status from DMP (0=unreliable, 3=high accuracy)
+    pub compass_accuracy: Option<u16>,
+
+    /// Pedometer step detector timestamp/count
+    pub pedometer_timestamp: Option<u32>,
 }
 
 #[cfg(test)]
