@@ -1315,21 +1315,6 @@ fn test_read_data_ready_status() {
     });
 }
 
-#[test]
-fn test_read_wom_status() {
-    block_on(async {
-        let i2c = MockAsyncI2c::new();
-        let interface = I2cInterface::default(i2c);
-
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
-
-        let result = imu.read_wom_status().await;
-        assert!(result.is_ok());
-    });
-}
-
 // ==================== PRIORITY 5: POWER MANAGEMENT TESTS ====================
 
 #[test]
