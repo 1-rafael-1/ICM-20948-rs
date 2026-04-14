@@ -27,20 +27,20 @@ NSS / CS     →    Level Shifter     → PA2 (Output)
 SCL / SCLK   →    Level Shifter     → PB13 (SPI SCK)
 SDA / SDI    →    Level Shifter     → PB15 (SPI MOSI)
 SDO / AD0    →    Level Shifter     → PB14 (SPI MISO)
-````
+```
 
 ## Building and Running
 
-Ensure you have the correct ARM target installed for the STM32L431 (Cortex-M4F):
+Ensure you have the ARM target installed that matches this example's build configuration:
 
 ```bash
-rustup target add thumbv7em-none-eabihf
+rustup target add thumbv7em-none-eabi
 ```
 
 Build and run a specific example:
 
 ```bash
-cargo run --release --bin basic_reading_async
+cargo run --release --bin wake_on_motion_async
 ```
 
 ## Available Examples
