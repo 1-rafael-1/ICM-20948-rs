@@ -142,16 +142,17 @@ device_driver::create_device!(
             const SIZE_BITS = 8;
             const ALLOW_ADDRESS_OVERLAP = true;
 
-            reserved_2_0: uint = 0..3,
             /// I2C master interrupt enable
-            i2c_mst_int_en: bool = 3,
+            i2c_mst_int_en: bool = 0,
             /// DMP interrupt enable
-            dmp_int1_en: bool = 4,
+            dmp_int1_en: bool = 1,
             /// PLL ready interrupt enable
-            pll_rdy_en: bool = 5,
+            pll_rdy_en: bool = 2,
             /// WoM (Wake on Motion) interrupt enable
-            wom_int_en: bool = 6,
-            reserved_7: uint = 7..8,
+            wom_int_en: bool = 3,
+            reserved_6_4: uint = 4..7,
+            /// Enable wake on FSYNC interrupt
+            reg_wof_en: bool = 7,
         },
 
         /// INT_ENABLE_1 - Interrupt Enable 1 (Bank 0, 0x11)
@@ -217,16 +218,15 @@ device_driver::create_device!(
             const SIZE_BITS = 8;
             const ALLOW_ADDRESS_OVERLAP = true;
 
-            reserved_2_0: uint = 0..3,
             /// I2C master interrupt
-            i2c_mst_int: bool = 3,
+            i2c_mst_int: bool = 0,
             /// DMP interrupt
-            dmp_int1: bool = 4,
+            dmp_int1: bool = 1,
             /// PLL ready interrupt
-            pll_rdy_int: bool = 5,
+            pll_rdy_int: bool = 2,
             /// WoM interrupt
-            wom_int: bool = 6,
-            reserved_7: uint = 7..8,
+            wom_int: bool = 3,
+            reserved_7_4: uint = 4..8,
         },
 
         /// INT_STATUS_1 - Interrupt Status 1 (Bank 0, 0x1A)
@@ -771,8 +771,9 @@ device_driver::create_device!(
 
             /// Raw data ready status
             raw_data_rdy: uint = 0..4,
+            reserved_6_4: uint = 4..7,
             /// WoM interrupt status
-            wof_status: uint = 4..8,
+            wof_status: bool = 7,
         },
 
         /// HW_FIX_DISABLE - Hardware Fix Disable (Bank 0, 0x75)
@@ -1139,10 +1140,10 @@ device_driver::create_device!(
             const SIZE_BITS = 8;
             const ALLOW_ADDRESS_OVERLAP = true;
 
-            /// Accelerometer intelligence enable
-            accel_intel_en: bool = 0,
             /// Accelerometer intelligence mode
-            accel_intel_mode_int: bool = 1,
+            accel_intel_mode_int: bool = 0,
+            /// Accelerometer intelligence enable
+            accel_intel_en: bool = 1,
             reserved_7_2: uint = 2..8,
         },
 

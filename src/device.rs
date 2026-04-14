@@ -2320,26 +2320,6 @@ where
         })
     }
 
-    /// Read wake-on-motion status
-    ///
-    /// # Returns
-    /// `WoM` status for each axis
-    ///
-    /// # Errors
-    /// Returns an error if communication with the device fails.
-    pub fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
-        self.select_bank(Bank::Bank0)?;
-
-        let status = self.device.data_rdy_status().read()?;
-        let bits = status.wof_status();
-
-        Ok(WomStatus {
-            x_motion: (bits & 0x01) != 0,
-            y_motion: (bits & 0x02) != 0,
-            z_motion: (bits & 0x04) != 0,
-        })
-    }
-
     // ==================== STAGE 3: POWER MANAGEMENT METHODS ====================
 
     /// Set the power mode
@@ -8025,26 +8005,6 @@ where
             sensor1_ready: (bits & 0x02) != 0,
             sensor2_ready: (bits & 0x04) != 0,
             sensor3_ready: (bits & 0x08) != 0,
-        })
-    }
-
-    /// Read wake-on-motion status
-    ///
-    /// # Returns
-    /// `WoM` status for each axis
-    ///
-    /// # Errors
-    /// Returns an error if communication with the device fails.
-    pub async fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
-        let status = self.device.data_rdy_status().read_async().await?;
-        let bits = status.wof_status();
-
-        Ok(WomStatus {
-            x_motion: (bits & 0x01) != 0,
-            y_motion: (bits & 0x02) != 0,
-            z_motion: (bits & 0x04) != 0,
         })
     }
 

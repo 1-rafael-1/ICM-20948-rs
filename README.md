@@ -33,15 +33,17 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 
 ### Communication & Modes
 - ✅ **I2C interface** - Fully tested with embedded-hal 1.0
-- ⚠️ **SPI interface** - Implemented but untested
+- ✅ **SPI interface** - Fully tested with embedded-hal 1.0
 - ✅ **Blocking and async operation** - Choose based on your application needs (embedded-hal-async)
 - ✅ **`no_std` compatible** - Works in embedded environments without standard library
 
-### Data Management
+### Data Management & Events
+- ✅ **Hardware Interrupts (INT1)** - Configurable push-pull/latch modes for Data Ready, FIFO Overflow, etc.
+- ✅ **Wake-on-Motion (WoM)** - Low power motion detection.
+- ✅ **FIFO management** - Batch reading with configurable watermarks for efficient data collection.
 - ✅ **Physical unit conversions** - Direct output in g, °/s, rad/s, °C, µT (or raw 16-bit values)
 - ✅ **Calibration support** - Offset calibration for accelerometer, gyroscope, and magnetometer with motion detection
 - ✅ **Hardware self-test** - Built-in diagnostic verification for all sensors
-- ✅ **FIFO management** - Batch reading with configurable watermarks for efficient data collection
 
 ### Configuration & Power
 - ✅ **Flexible sensor configuration** - Full-scale ranges, digital low-pass filters, sample rate dividers
@@ -49,8 +51,6 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 - ✅ **Optional defmt support** - Logging support for embedded debugging
 
 ### Known Limitations
-- ❌ **Interrupts** - API exists but hardware interrupt pin does not trigger (not functional)
-- ❌ **Wake-on-Motion** - API exists but motion detection does not trigger interrupts (not functional). Related to interrupt system issues.
 - ❌ **DMP (Digital Motion Processor)** - Not functional despite extensive attempts. Use software sensor fusion instead.
 
 ## Usage
@@ -148,8 +148,6 @@ For raw 16-bit values, use the `_raw()` variants like `read_accel_raw()` and `re
 
 ### SPI Interface
 
-**⚠️ SPI Status:** The SPI interface is implemented but has not been tested with hardware. Pull Requests with fixes and/or examples are welcome!
-
 **SPI Configuration:**
 - Mode: 0 or 3 (CPOL=0, CPHA=0 or CPOL=1, CPHA=1)
 - Max clock: 7 MHz
@@ -197,23 +195,12 @@ All tests run automatically on every push and pull request.
 
 **Advanced Features:**
 - [x] FIFO management (configuration, batch reading, parsing)
+- [x] Hardware Interrupts (INT1 push-pull/latch, Data Ready, Overflow)
+- [x] Wake-on-Motion (WoM) 
 - [x] Power management (sleep, low-power, cycle modes)
 - [x] Hardware self-test (accelerometer, gyroscope, magnetometer with internal test signals)
 
 ### Known Non-Functional Features ❌
-
-**Interrupts:**
-- Interrupt configuration API exists in code
-- **Status:** Not functional - hardware interrupt pin does not trigger
-- Likely requires deep hardware-level debugging or may have fundamental issues
-- **Recommendation:** Do not use interrupt features
-
-**Wake-on-Motion:**
-- Low-power mode configuration API exists
-- **Status:** Not functional - motion detection does not trigger interrupts
-- Related to interrupt system issues
-- **Recommendation:** Use continuous polling if motion detection is needed
-
 **Digital Motion Processor (DMP):**
 - Firmware loading implementation exists (behind `dmp` feature flag)
 - **Status:** Not functional despite extensive tinkering
