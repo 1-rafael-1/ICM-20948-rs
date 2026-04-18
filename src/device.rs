@@ -2071,7 +2071,6 @@ where
     /// # Errors
     /// Returns an error if communication with the device fails.
     #[deprecated(
-        since = "latest",
         note = "Incorrect implementation: ICM-20948 does not support distinguishing X/Y/Z axes for Wake-on-Motion."
     )]
     pub fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
@@ -2180,7 +2179,7 @@ where
         // The ODR value is just a byte that goes directly into the low register
         let odr = config.accel_rate.odr_value();
         self.device.bank_2_accel_smplrt_div().write(|w| {
-            w.set_accel_smplrt_div(odr as u16);
+            w.set_accel_smplrt_div(u16::from(odr));
         })?;
 
         // Configure accelerometer for LOW-POWER MODE per Table 19 of datasheet
@@ -7501,7 +7500,6 @@ where
     /// # Errors
     /// Returns an error if communication with the device fails.
     #[deprecated(
-        since = "latest",
         note = "Incorrect implementation: ICM-20948 does not support distinguishing X/Y/Z axes for Wake-on-Motion."
     )]
     pub async fn read_wom_status(&mut self) -> Result<WomStatus, Error<I::Error>> {
@@ -7638,7 +7636,7 @@ where
         self.device
             .bank_2_accel_smplrt_div()
             .write_async(|w| {
-                w.set_accel_smplrt_div(odr as u16);
+                w.set_accel_smplrt_div(u16::from(odr));
             })
             .await?;
 

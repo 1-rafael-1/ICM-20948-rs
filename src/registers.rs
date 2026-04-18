@@ -12,7 +12,7 @@
 //!
 //! All registers that share addresses across banks use `ALLOW_ADDRESS_OVERLAP = true`.
 
-#[allow(missing_docs)]
+#![allow(missing_docs)]
 device_driver::create_device!(
     device_name: Icm20948,
     dsl: {
