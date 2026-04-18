@@ -5343,7 +5343,7 @@ where
                 .write_register(0x7D, 8, &chunk[..bytes_read])
                 .await?;
 
-            current_address += bytes_read as u16;
+            current_address += u16::try_from(bytes_read).unwrap_or(u16::MAX);
 
             // Small delay every few chunks to allow I2C bus to settle
             if current_address % 256 == 0 {
