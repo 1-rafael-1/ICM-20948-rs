@@ -232,6 +232,42 @@ jobs:
           cd examples/rp2350-blocking
           cargo build --bin ${{ matrix.example }} --release
 
+  # Cross-compile async examples for STM32L431
+  examples-stm32l431-async:
+    name: Build STM32L431 Async Examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - wake_on_motion_async
+          - hardware_interrupt_async
+          - dmp_integration_async
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+          targets: thumbv7em-none-eabi
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/stm32l431-async
+          cache-on-failure: true
+
+      - name: Build STM32L431 async example (debug)
+        run: |
+          cd examples/stm32l431-async
+          cargo build --bin ${{ matrix.example }}
+
+      - name: Build STM32L431 async example (release)
+        run: |
+          cd examples/stm32l431-async
+          cargo build --bin ${{ matrix.example }} --release
+
   # Final check that everything passed
   ci-success:
     name: CI Success
@@ -244,6 +280,7 @@ jobs:
       - docs
       - examples-rp2350-async
       - examples-rp2350-blocking
+      - examples-stm32l431-async
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
