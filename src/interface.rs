@@ -265,6 +265,9 @@ where
             embedded_hal_async::spi::Operation::Write(write_data),
         ];
 
-        self.spi.transaction(&mut operations).await.map_err(Error::Bus)
+        self.spi
+            .transaction(&mut operations)
+            .await
+            .map_err(Error::Bus)
     }
 }

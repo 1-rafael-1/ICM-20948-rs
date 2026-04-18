@@ -71,7 +71,7 @@ cfg_if::cfg_if!(
                 }
             }
             /// Fills the provided buffer with decompressed firmware bytes.
-            /// 
+            ///
             /// Returns the number of bytes actually read. A return value of `0` indicates
             pub fn read(&mut self, buf: &mut [u8]) -> usize {
                 let mut count = 0;
@@ -155,7 +155,7 @@ cfg_if::cfg_if!(
                 Self { pos: 0 }
             }
             /// Fills the provided buffer with firmware bytes.
-            /// 
+            ///
             /// Returns the number of bytes actually read. A return value of `0` indicates
             /// that the end of the firmware has been reached.
             pub fn read(&mut self, buf: &mut [u8]) -> usize {
