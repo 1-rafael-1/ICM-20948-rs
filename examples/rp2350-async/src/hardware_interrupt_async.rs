@@ -27,8 +27,8 @@ use embassy_rp::{
 };
 use embassy_time::{Delay, Timer};
 use icm20948::{
-    I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
     sensors::{AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale},
+    I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
 };
 use panic_probe as _;
 
@@ -117,7 +117,7 @@ async fn main(_spawner: Spawner) {
         {
             counter = counter.wrapping_add(1);
 
-            if counter % 10 == 0 {
+            if counter.is_multiple_of(10) {
                 info!(
                     "[10Hz Sample] Accel: [{}, {}, {}] g | Gyro: [{}, {}, {}] °/s",
                     accel.x, accel.y, accel.z, gyro.x, gyro.y, gyro.z
