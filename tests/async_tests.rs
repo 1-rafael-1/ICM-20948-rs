@@ -1320,6 +1320,7 @@ fn test_read_data_ready_status() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_read_wom_status() {
     block_on(async {
         let i2c = MockAsyncI2c::new();

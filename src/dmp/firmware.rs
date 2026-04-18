@@ -5,8 +5,8 @@
 //!
 //! ## Source and Licensing
 //!
-//! This firmware is originally provided by InvenSense (TDK) and distributed via
-//! the SparkFun ICM-20948 Arduino Library under MIT license:
+//! This firmware is originally provided by `InvenSense` (TDK) and distributed via
+//! the `SparkFun` ICM-20948 Arduino Library under MIT license:
 //! <https://github.com/sparkfun/SparkFun_ICM-20948_ArduinoLibrary>
 //!
 //! ```text
@@ -57,9 +57,14 @@ cfg_if::cfg_if!(
             match_len: usize,
             match_offset: usize,
         }
+        impl Default for FirmwareReader {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
         impl FirmwareReader {
             /// Creates a new `FirmwareReader` instance initialized for LZSS decompression.
-            pub fn new() -> Self {
+            pub const fn new() -> Self {
                 Self {
                     in_pos: 0,
                     window: [0; 2048],
@@ -116,8 +121,8 @@ cfg_if::cfg_if!(
                     if self.in_pos + 1 >= input.len() {
                         return None;
                     }
-                    let b1 = input[self.in_pos] as u16;
-                    let b2 = input[self.in_pos + 1] as u16;
+                    let b1 = u16::from(input[self.in_pos]);
+                    let b2 = u16::from(input[self.in_pos + 1]);
                     self.in_pos += 2;
                     let val = (b1 << 8) | b2;
                     self.match_offset = ((val >> 5) + 1) as usize;
@@ -149,9 +154,14 @@ cfg_if::cfg_if!(
         pub struct FirmwareReader {
             pos: usize,
         }
+        impl Default for FirmwareReader {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
         impl FirmwareReader {
             /// Creates a new `FirmwareReader` instance initialized to the start of the firmware.
-            pub fn new() -> Self {
+            pub const fn new() -> Self {
                 Self { pos: 0 }
             }
             /// Fills the provided buffer with firmware bytes.

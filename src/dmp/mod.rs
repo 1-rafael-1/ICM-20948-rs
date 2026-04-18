@@ -80,6 +80,8 @@ pub use parser::DmpParser;
 /// DMP configuration options
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[allow(clippy::struct_excessive_bools)]
+#[must_use]
 pub struct DmpConfig {
     /// Enable 6-axis quaternion (accel + gyro)
     pub quaternion_6axis: bool,
@@ -159,7 +161,7 @@ impl Default for DmpConfig {
 
 impl DmpConfig {
     /// Create a new DMP configuration with all features disabled
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             quaternion_6axis: false,
             quaternion_p6axis: false,
@@ -182,73 +184,73 @@ impl DmpConfig {
     }
 
     /// Enable 6-axis quaternion output (accel + gyro)
-    pub fn with_quaternion_6axis(mut self, enable: bool) -> Self {
+    pub const fn with_quaternion_6axis(mut self, enable: bool) -> Self {
         self.quaternion_6axis = enable;
         self
     }
 
     /// Enable 6-axis Pedometer quaternion (accel + gyro)
-    pub fn with_quaternion_p6axis(mut self, enable: bool) -> Self {
+    pub const fn with_quaternion_p6axis(mut self, enable: bool) -> Self {
         self.quaternion_p6axis = enable;
         self
     }
 
     /// Enable 9-axis quaternion output (accel + gyro + mag)
-    pub fn with_quaternion_9axis(mut self, enable: bool) -> Self {
+    pub const fn with_quaternion_9axis(mut self, enable: bool) -> Self {
         self.quaternion_9axis = enable;
         self
     }
 
     /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
-    pub fn with_geomag_rotation_vector(mut self, enable: bool) -> Self {
+    pub const fn with_geomag_rotation_vector(mut self, enable: bool) -> Self {
         self.geomag_rotation_vector = enable;
         self
     }
 
     /// Enable calibrated gyroscope output
-    pub fn with_calibrated_gyro(mut self, enable: bool) -> Self {
+    pub const fn with_calibrated_gyro(mut self, enable: bool) -> Self {
         self.calibrated_gyro = enable;
         self
     }
 
     /// Enable calibrated accelerometer output
-    pub fn with_calibrated_accel(mut self, enable: bool) -> Self {
+    pub const fn with_calibrated_accel(mut self, enable: bool) -> Self {
         self.calibrated_accel = enable;
         self
     }
 
     /// Enable calibrated magnetometer output
-    pub fn with_calibrated_mag(mut self, enable: bool) -> Self {
+    pub const fn with_calibrated_mag(mut self, enable: bool) -> Self {
         self.calibrated_mag = enable;
         self
     }
 
     /// Enable raw accelerometer output from DMP
-    pub fn with_raw_accel(mut self, enable: bool) -> Self {
+    pub const fn with_raw_accel(mut self, enable: bool) -> Self {
         self.raw_accel = enable;
         self
     }
 
     /// Enable raw gyroscope output from DMP
-    pub fn with_raw_gyro(mut self, enable: bool) -> Self {
+    pub const fn with_raw_gyro(mut self, enable: bool) -> Self {
         self.raw_gyro = enable;
         self
     }
 
     /// Enable raw magnetometer output from DMP
-    pub fn with_raw_mag(mut self, enable: bool) -> Self {
+    pub const fn with_raw_mag(mut self, enable: bool) -> Self {
         self.raw_mag = enable;
         self
     }
 
     /// Enable pedometer step detector
-    pub fn with_step_detector(mut self, enable: bool) -> Self {
+    pub const fn with_step_detector(mut self, enable: bool) -> Self {
         self.step_detector = enable;
         self
     }
 
     /// Enable pedometer step counter
-    pub fn with_step_counter(mut self, enable: bool) -> Self {
+    pub const fn with_step_counter(mut self, enable: bool) -> Self {
         self.step_counter = enable;
         self
     }
@@ -278,7 +280,7 @@ impl DmpConfig {
     // }
 
     /// Set DMP sample rate in Hz
-    pub fn with_sample_rate(mut self, rate: u16) -> Self {
+    pub const fn with_sample_rate(mut self, rate: u16) -> Self {
         self.sample_rate = rate;
         self
     }
@@ -300,12 +302,12 @@ pub struct Quaternion {
 
 impl Quaternion {
     /// Create a new quaternion
-    pub fn new(w: f32, x: f32, y: f32, z: f32) -> Self {
+    pub const fn new(w: f32, x: f32, y: f32, z: f32) -> Self {
         Self { w, x, y, z }
     }
 
     /// Create identity quaternion (no rotation)
-    pub fn identity() -> Self {
+    pub const fn identity() -> Self {
         Self {
             w: 1.0,
             x: 0.0,
@@ -369,11 +371,12 @@ pub struct EulerAngles {
 
 impl EulerAngles {
     /// Convert radians to degrees
+    #[allow(clippy::missing_const_for_fn)]
     pub fn to_degrees(&self) -> (f32, f32, f32) {
         (
-            self.roll * 180.0 / core::f32::consts::PI,
-            self.pitch * 180.0 / core::f32::consts::PI,
-            self.yaw * 180.0 / core::f32::consts::PI,
+            self.roll.to_degrees(),
+            self.pitch.to_degrees(),
+            self.yaw.to_degrees(),
         )
     }
 }
@@ -382,10 +385,10 @@ impl EulerAngles {
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DmpData {
-    /// 6-axis quaternion (accel + gyro)/ Game rotation vector / GRAVITY / LINEAR_ACCEL
+    /// 6-axis quaternion (accel + gyro)/ Game rotation vector / GRAVITY / `LINEAR_ACCEL`
     pub quaternion_6axis: Option<Quaternion>,
 
-    /// PQuat6 (Pedometer Quaternion)
+    /// `PQuat6` (Pedometer Quaternion)
     pub pedometer_quaternion: Option<Quaternion>,
 
     /// 9-axis quaternion (accel + gyro + mag)

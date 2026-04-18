@@ -49,12 +49,12 @@ impl DmpParser {
     /// # Arguments
     ///
     /// * `header` - Primary 16-bit packet header
-    /// * `header2` - Optional secondary 16-bit packet header (if HEADER2_BIT is set)
+    /// * `header2` - Optional secondary 16-bit packet header (if `HEADER2_BIT` is set)
     ///
     /// # Returns
     ///
     /// Returns the exact size of the packet in bytes.
-    pub fn calculate_packet_size(header: u16, header2: Option<u16>) -> usize {
+    pub const fn calculate_packet_size(header: u16, header2: Option<u16>) -> usize {
         // Base packet size: Header + Footer
         let mut size = DmpPacketSize::HEADER + DmpPacketSize::FOOTER;
 
@@ -131,6 +131,7 @@ impl DmpParser {
     /// Returns `Some((DmpData, usize))` with the parsed data and the number of
     /// bytes consumed, or `None` if parsing failed.
     /// Parse a DMP packet from FIFO data
+    #[allow(clippy::too_many_lines)]
     pub fn parse_packet(&self, data: &[u8]) -> Option<(DmpData, usize)> {
         if data.len() < DmpPacketSize::HEADER {
             return None;
@@ -332,7 +333,13 @@ impl DmpParser {
     /// # Returns
     ///
     /// Returns `Some(Quaternion)` if parsing succeeded, `None` if data too short.
+    #[allow(clippy::unused_self)]
+    #[allow(clippy::cast_precision_loss)]
     pub(crate) fn parse_quaternion6(&self, data: &[u8]) -> Option<Quaternion> {
+        // Convert from Q30 to float
+        // Q30: 1 bit sign, 1 bit integer, 30 bits fractional
+        const Q30_DIVISOR: f32 = 1_073_741_824.0; // 2^30
+
         if data.len() < DmpPacketSize::QUAT6 {
             return None;
         }
@@ -341,10 +348,6 @@ impl DmpParser {
         let qx = i32::from_be_bytes([data[0], data[1], data[2], data[3]]);
         let qy = i32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let qz = i32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-
-        // Convert from Q30 to float
-        // Q30: 1 bit sign, 1 bit integer, 30 bits fractional
-        const Q30_DIVISOR: f32 = 1_073_741_824.0; // 2^30
 
         let x = (qx as f32) / Q30_DIVISOR;
         let y = (qy as f32) / Q30_DIVISOR;
@@ -377,11 +380,14 @@ impl DmpParser {
         }
         let quat = self.parse_quaternion6(data)?;
         let accuracy_raw = u16::from_be_bytes([data[12], data[13]]);
-        Some((quat, accuracy_raw as f32))
+        Some((quat, f32::from(accuracy_raw)))
     }
 
     /// Parse 16-bit compressed quaternion (PQUAT6)
+    #[allow(clippy::unused_self)]
     pub(crate) fn parse_pquat6(&self, data: &[u8]) -> Option<Quaternion> {
+        const Q14_DIVISOR: f32 = 16384.0; // 2^14
+
         if data.len() < 6 {
             return None;
         }
@@ -391,11 +397,9 @@ impl DmpParser {
         let qy = i16::from_be_bytes([data[2], data[3]]);
         let qz = i16::from_be_bytes([data[4], data[5]]);
 
-        const Q14_DIVISOR: f32 = 16384.0; // 2^14
-
-        let x = (qx as f32) / Q14_DIVISOR;
-        let y = (qy as f32) / Q14_DIVISOR;
-        let z = (qz as f32) / Q14_DIVISOR;
+        let x = f32::from(qx) / Q14_DIVISOR;
+        let y = f32::from(qy) / Q14_DIVISOR;
+        let z = f32::from(qz) / Q14_DIVISOR;
 
         let w_sq = 1.0 - (x * x + y * y + z * z);
         let w = if w_sq > 0.0 { libm::sqrtf(w_sq) } else { 0.0 };
@@ -414,6 +418,7 @@ impl DmpParser {
     /// # Returns
     ///
     /// Returns `Some((x, y, z))` if parsing succeeded, `None` if data too short.
+    #[allow(clippy::unused_self)]
     fn parse_accel_gyro(&self, data: &[u8]) -> Option<(i16, i16, i16)> {
         if data.len() < DmpPacketSize::ACCEL_COMPASS {
             return None;
@@ -437,6 +442,7 @@ impl DmpParser {
     /// # Returns
     ///
     /// Returns `Some((x, y, z))` if parsing succeeded, `None` if data too short.
+    #[allow(clippy::unused_self)]
     fn parse_calibrated_gyro(&self, data: &[u8]) -> Option<(i32, i32, i32)> {
         if data.len() < DmpPacketSize::CAL_GYRO {
             return None;
@@ -461,7 +467,8 @@ impl DmpParser {
     /// # Returns
     ///
     /// Returns `true` if header is valid, `false` otherwise.
-    pub fn validate_header(&self, header: u16) -> bool {
+    #[allow(clippy::unused_self)]
+    pub const fn validate_header(&self, header: u16) -> bool {
         // Header should have at least one data bit set
         header != 0 && header < 0x8000 // Reasonable upper bound
     }

@@ -22,8 +22,8 @@
 //! - **Feature Enablement**: Which outputs (quaternion, calibrated data, etc.)
 //!
 //! The complete initialization writes 28 configuration values to DMP memory at specific
-//! addresses. These values are based on the InvenSense reference implementation and
-//! SparkFun's validated Arduino library.
+//! addresses. These values are based on the `InvenSense` reference implementation and
+//! `SparkFun`'s validated Arduino library.
 //!
 //! ## Feature Bits
 //!
@@ -32,16 +32,16 @@
 
 use crate::dmp::DmpConfig;
 
-/// Calculate GYRO_SF (Gyro Scaling Factor) for DMP
+/// Calculate `GYRO_SF` (Gyro Scaling Factor) for DMP
 ///
 /// This value depends on the gyro sample rate divider and the PLL correction value.
-/// The PLL value should be read from Bank 1, Register 0x28 (TIMEBASE_CORRECTION_PLL).
+/// The PLL value should be read from Bank 1, Register 0x28 (`TIMEBASE_CORRECTION_PLL`).
 ///
 /// # Arguments
 ///
-/// * `gyro_sample_rate_div` - Value from GYRO_SMPLRT_DIV register (0-255)
+/// * `gyro_sample_rate_div` - Value from `GYRO_SMPLRT_DIV` register (0-255)
 ///   - 0 = 1125 Hz, 1 = 562.5 Hz, 4 = 225 Hz, 9 = 112 Hz, 19 = 55 Hz
-/// * `pll_correction` - Value from TIMEBASE_CORRECTION_PLL register (typically 0x18)
+/// * `pll_correction` - Value from `TIMEBASE_CORRECTION_PLL` register (typically 0x18)
 ///
 /// # Formula
 ///
@@ -64,12 +64,12 @@ use crate::dmp::DmpConfig;
 /// assert_eq!(gyro_sf, 0x276FBC37);
 /// ```
 pub fn calculate_gyro_sf(gyro_sample_rate_div: u8, pll_correction: i8) -> u32 {
-    const MAGIC_CONSTANT: u64 = 264446880937391;
-    const MAGIC_CONSTANT_SCALE: u64 = 100000;
+    const MAGIC_CONSTANT: u64 = 264_446_880_937_391;
+    const MAGIC_CONSTANT_SCALE: u64 = 100_000;
     const GYRO_LEVEL: u8 = 4; // Always 4 regardless of FSR
 
-    let div = gyro_sample_rate_div as u64;
-    let pll = pll_correction as i16; // Sign-extend to i16
+    let div = u64::from(gyro_sample_rate_div);
+    let pll = i16::from(pll_correction); // Sign-extend to i16
 
     let result: u64 = if pll < 0 {
         // PLL has bit 7 set (negative when treated as signed)
@@ -123,7 +123,7 @@ impl DmpSampleRate {
     ///
     /// Formula: ODR = 1125 Hz / (1 + divider)
     /// Note: Returns a 16-bit value because the Accel divider is 12-bit
-    /// split across ACCEL_SMPLRT_DIV_1 and ACCEL_SMPLRT_DIV_2.
+    /// split across `ACCEL_SMPLRT_DIV_1` and `ACCEL_SMPLRT_DIV_2`.
     pub const fn accel_sample_rate_div(&self) -> u16 {
         match self {
             Self::Hz56 => 19, // 1125 / 20 = 56.25 Hz
@@ -132,7 +132,7 @@ impl DmpSampleRate {
         }
     }
 
-    /// Get ACCEL_ONLY_GAIN parameter for this rate
+    /// Get `ACCEL_ONLY_GAIN` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x03A49249
@@ -140,13 +140,13 @@ impl DmpSampleRate {
     /// - 225Hz: 0x00E8BA2E
     pub const fn accel_only_gain(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x03A49249,
-            Self::Hz112 => 0x01D1745D,
-            Self::Hz225 => 0x00E8BA2E,
+            Self::Hz56 => 0x03A4_9249,
+            Self::Hz112 => 0x01D1_745D,
+            Self::Hz225 => 0x00E8_BA2E,
         }
     }
 
-    /// Get ACCEL_ALPHA_VAR parameter for this rate
+    /// Get `ACCEL_ALPHA_VAR` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x34924925
@@ -154,13 +154,13 @@ impl DmpSampleRate {
     /// - 225Hz: 0x3D27D27D
     pub const fn accel_alpha_var(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x34924925,
-            Self::Hz112 => 0x3A492492,
-            Self::Hz225 => 0x3D27D27D,
+            Self::Hz56 => 0x3492_4925,
+            Self::Hz112 => 0x3A49_2492,
+            Self::Hz225 => 0x3D27_D27D,
         }
     }
 
-    /// Get ACCEL_A_VAR parameter for this rate
+    /// Get `ACCEL_A_VAR` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x0B6DB6DB
@@ -168,9 +168,9 @@ impl DmpSampleRate {
     /// - 225Hz: 0x02D82D83
     pub const fn accel_a_var(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x0B6DB6DB,
-            Self::Hz112 => 0x05B6DB6E,
-            Self::Hz225 => 0x02D82D83,
+            Self::Hz56 => 0x0B6D_B6DB,
+            Self::Hz112 => 0x05B6_DB6E,
+            Self::Hz225 => 0x02D8_2D83,
         }
     }
 
@@ -249,7 +249,7 @@ impl ArbitrarySampleRate {
         let gyro_div = if hz >= 1100 {
             0
         } else {
-            ((1100 / hz as u32).saturating_sub(1)).min(255) as u8
+            ((1100 / u32::from(hz)).saturating_sub(1)).min(255) as u8
         };
 
         // If this exactly matches a validated rate, return None
@@ -273,9 +273,9 @@ impl ArbitrarySampleRate {
             (DmpSampleRate::Hz112, DmpSampleRate::Hz225)
         };
 
-        let lower_hz = 1100.0 / (1.0 + lower_rate.gyro_sample_rate_div() as f32);
-        let upper_hz = 1100.0 / (1.0 + upper_rate.gyro_sample_rate_div() as f32);
-        let hz_f = hz as f32;
+        let lower_hz = 1100.0 / (1.0 + f32::from(lower_rate.gyro_sample_rate_div()));
+        let upper_hz = 1100.0 / (1.0 + f32::from(upper_rate.gyro_sample_rate_div()));
+        let hz_f = f32::from(hz);
 
         // Interpolation factor
         let t = (hz_f - lower_hz) / (upper_hz - lower_hz);
@@ -304,6 +304,7 @@ impl ArbitrarySampleRate {
 
     /// Linear interpolation for u32 values
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     fn lerp_u32(a: u32, b: u32, t: f32) -> u32 {
         let a_f = a as f32;
         let b_f = b as f32;
@@ -452,40 +453,40 @@ bitflags::bitflags! {
 #[cfg(feature = "defmt")]
 impl defmt::Format for DmpControl1Flags {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "DmpControl1Flags({:x})", self.bits())
+        defmt::write!(fmt, "DmpControl1Flags({:x})", self.bits());
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for DmpControl2Flags {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "DmpControl2Flags({:x})", self.bits())
+        defmt::write!(fmt, "DmpControl2Flags({:x})", self.bits());
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for DmpDataReadyStatus {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "DmpDataReadyStatus({:x})", self.bits())
+        defmt::write!(fmt, "DmpDataReadyStatus({:x})", self.bits());
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for DmpMotionEventControl {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "DmpMotionEventControl({:x})", self.bits())
+        defmt::write!(fmt, "DmpMotionEventControl({:x})", self.bits());
     }
 }
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for DmpFeatures {
     fn format(&self, fmt: defmt::Formatter) {
-        defmt::write!(fmt, "DmpFeatures({:x})", self.bits())
+        defmt::write!(fmt, "DmpFeatures({:x})", self.bits());
     }
 }
 
 impl DmpFeatures {
-    /// Convert logical features to DATA_OUT_CTL2 (Accuracy Reporting)
+    /// Convert logical features to `DATA_OUT_CTL2` (Accuracy Reporting)
     pub fn as_control2(&self) -> DmpControl2Flags {
         let mut c2 = DmpControl2Flags::empty();
         if self.intersects(Self::RAW_ACCEL | Self::CALIBRATED_ACCEL) {
@@ -507,7 +508,7 @@ impl DmpFeatures {
         c2
     }
 
-    /// Convert logical features to DATA_OUT_CTL1 mask (What goes into FIFO)
+    /// Convert logical features to `DATA_OUT_CTL1` mask (What goes into FIFO)
     pub fn as_control1(&self) -> DmpControl1Flags {
         let mut c1 = DmpControl1Flags::empty();
 
@@ -569,7 +570,7 @@ impl DmpFeatures {
         c1
     }
 
-    /// Convert logical features to DATA_RDY_STATUS mask (Trigger sources)
+    /// Convert logical features to `DATA_RDY_STATUS` mask (Trigger sources)
     pub fn as_data_ready(&self) -> DmpDataReadyStatus {
         let mut rdy = DmpDataReadyStatus::empty();
 
@@ -604,7 +605,7 @@ impl DmpFeatures {
         rdy
     }
 
-    /// Convert logical features to MOTION_EVENT_CTL mask (Fusion & Calibration Engines)
+    /// Convert logical features to `MOTION_EVENT_CTL` mask (Fusion & Calibration Engines)
     pub fn as_motion_event(&self) -> DmpMotionEventControl {
         let mut me = DmpMotionEventControl::empty();
 
@@ -676,7 +677,7 @@ impl DmpMemoryAddresses {
     pub const DATA_RDY_STATUS: u16 = 0x008A;
 
     /// Gyroscope scaling factor (depends on sample rate and FSR)
-    /// Formula: GYRO_SF = (sample_rate_div + 1) * gyro_fsr_scale
+    /// Formula: `GYRO_SF` = (`sample_rate_div` + 1) * `gyro_fsr_scale`
     pub const GYRO_SF: u16 = 0x0130;
 
     /// Accelerometer scaling factor 1 (for DMP internal alignment)
@@ -785,7 +786,7 @@ impl DmpOdrRegisters {
     pub const PRESSURE: u16 = 0x00BC;
 }
 
-/// DMP Output Data Rate Counter (ODR_CNTR) register addresses
+/// DMP Output Data Rate Counter (`ODR_CNTR`) register addresses
 ///
 /// These counters must be reset (set to 0) when changing ODR values
 pub struct DmpOdrCounterRegisters;
@@ -1021,7 +1022,7 @@ impl DmpConfig {
     /// Calculate expected FIFO packet size based on configuration
     ///
     /// This calculates how many bytes each DMP packet will contain by strictly parsing
-    /// the generated DATA_OUT_CTL1 mask, ensuring total alignment with the hardware.
+    /// the generated `DATA_OUT_CTL1` mask, ensuring total alignment with the hardware.
     pub fn packet_size(&self) -> usize {
         // Base packet size: Header + Footer
         let mut size = DmpPacketSize::HEADER + DmpPacketSize::FOOTER;
@@ -1057,9 +1058,7 @@ impl DmpConfig {
         if c1.contains(DmpControl1Flags::QUAT6) {
             size += DmpPacketSize::QUAT6;
         }
-        if c1.contains(DmpControl1Flags::QUAT9) {
-            size += DmpPacketSize::QUAT9;
-        } else if c1.contains(DmpControl1Flags::GEOMAG) {
+        if c1.contains(DmpControl1Flags::QUAT9) || c1.contains(DmpControl1Flags::GEOMAG) {
             size += DmpPacketSize::QUAT9;
         }
         // if c1.contains(DmpControl1Flags::CALIBRATED_GYRO) {
@@ -1091,7 +1090,7 @@ impl DmpConfig {
     /// divider = (225 / `desired_rate`) - 1
     ///
     /// Returns the divider value to write to the DMP.
-    pub fn sample_rate_divider(&self) -> u16 {
+    pub const fn sample_rate_divider(&self) -> u16 {
         const GYRO_RATE: u16 = 225; // Hz
 
         if self.sample_rate == 0 || self.sample_rate > GYRO_RATE {
@@ -1105,7 +1104,7 @@ impl DmpConfig {
 /// Configuration sequence builder
 ///
 /// This struct helps build the sequence of register/memory writes needed
-/// to configure the DMP. Based on InvenSense reference implementation.
+/// to configure the DMP. Based on `InvenSense` reference implementation.
 pub struct ConfigSequence {
     /// Feature mask to enable
     pub features: DmpFeatures,
@@ -1157,7 +1156,7 @@ impl ConfigSequence {
     ///
     /// The calibration parameters are automatically selected based on the sample rate.
     /// - Uses `pll_correction` for optimal timing accuracy
-    /// - Reads correction value from Bank 1, register 0x28 (TIMEBASE_CORSE_CORRECTION_PLL)
+    /// - Reads correction value from Bank 1, register 0x28 (`TIMEBASE_CORSE_CORRECTION_PLL`)
     pub fn from_config_and_pll(config: &DmpConfig, pll_correction: i8) -> Self {
         let features = config.get_active_features();
         // Calculate DATA_OUT_CTL1 - tells DMP what to output to FIFO
@@ -1202,7 +1201,7 @@ impl ConfigSequence {
 
     /// Get all memory writes needed to fully configure the DMP
     ///
-    /// This returns the complete initialization sequence. Each entry is (address, data_bytes).
+    /// This returns the complete initialization sequence. Each entry is (address, `data_bytes`).
     ///
     /// Without these writes, the DMP will load and enable successfully but will not
     /// generate any data in the FIFO.
@@ -1222,6 +1221,7 @@ impl ConfigSequence {
     /// - **Motion event control**: Enable calibration and fusion
     ///
     /// Total: 37 memory writes
+    #[allow(clippy::missing_const_for_fn)]
     pub fn get_init_sequence(&self) -> [InitWrite<'_>; 50] {
         [
             // Gyroscope Scaling Factor

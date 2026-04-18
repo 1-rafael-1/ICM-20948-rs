@@ -4431,11 +4431,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     async fn read_accel(&mut self) -> Result<AccelData, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read all 6 bytes atomically to prevent torn reads
         // Register addresses: ACCEL_XOUT_H (0x2D) through ACCEL_ZOUT_L (0x32)
         const ACCEL_XOUT_H: u8 = 0x2D;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 6];
         self.device
             .interface
@@ -4457,11 +4458,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     async fn read_gyro(&mut self) -> Result<GyroData, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read all 6 bytes atomically to prevent torn reads
         // Register addresses: GYRO_XOUT_H (0x33) through GYRO_ZOUT_L (0x38)
         const GYRO_XOUT_H: u8 = 0x33;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 6];
         self.device
             .interface
@@ -4485,11 +4487,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub async fn read_temperature(&mut self) -> Result<i16, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read both bytes atomically to prevent torn reads
         // Register addresses: TEMP_OUT_H (0x39) through TEMP_OUT_L (0x3A)
         const TEMP_OUT_H: u8 = 0x39;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 2];
         self.device
             .interface
@@ -5345,7 +5348,7 @@ where
             current_address += u16::try_from(bytes_read).unwrap_or(u16::MAX);
 
             // Small delay every few chunks to allow I2C bus to settle
-            if current_address % 256 == 0 {
+            if current_address.is_multiple_of(256) {
                 delay.delay_us(100).await;
             }
         }
@@ -5720,6 +5723,7 @@ where
     /// # Errors
     ///
     /// Returns an error if DMP memory write fails or if an unknown ODR register is provided.
+    #[allow(dead_code)]
     async fn dmp_set_odr_async(
         &mut self,
         odr_register: u16,
@@ -5757,9 +5761,10 @@ where
     }
 
     #[cfg(feature = "dmp")]
+    #[allow(dead_code)]
     /// Configure which sensors the DMP should expect data from (async)
     ///
-    /// This function writes to the DATA_RDY_STATUS register to tell the DMP firmware
+    /// This function writes to the `DATA_RDY_STATUS` register to tell the DMP firmware
     /// which sensors are available and should be monitored. This is critical for DMP
     /// operation - without this, the DMP won't process sensor data.
     ///
@@ -5809,7 +5814,9 @@ where
     }
 
     #[cfg(feature = "dmp")]
-    /// Set DMP Motion Event Control (MOTION_EVENT_CTL) register
+    #[allow(dead_code)]
+    #[allow(clippy::fn_params_excessive_bools)]
+    /// Set DMP Motion Event Control (`MOTION_EVENT_CTL`) register
     ///
     /// This register enables or disables various calibration and sensor fusion engines
     /// inside the DMP. All available flags are exposed as parameters.
@@ -6280,9 +6287,9 @@ where
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
                 data.calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
-            return Ok(Some(data));
+            Ok(Some(data))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 
@@ -7122,10 +7129,10 @@ where
     /// # Configuration details
     ///
     /// The DMP requires a specific magnetometer setup:
-    /// - **I2C_SLV0**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
+    /// - **`I2C_SLV0`**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
     ///   with byte-swap and register grouping enabled
-    /// - **I2C_SLV1**: Triggers single measurement mode on each DMP sample cycle
-    /// - **I2C_MST_ODR_CONFIG**: Sets magnetometer sample rate to ~69 Hz
+    /// - **`I2C_SLV1`**: Triggers single measurement mode on each DMP sample cycle
+    /// - **`I2C_MST_ODR_CONFIG`**: Sets magnetometer sample rate to ~69 Hz
     ///
     /// # Arguments
     ///
@@ -7160,6 +7167,7 @@ where
     /// driver.dmp_configure(&config).await?;
     /// driver.dmp_enable(true).await?;
     /// ```
+    #[allow(clippy::too_many_lines)]
     pub async fn dmp_init_magnetometer<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
     where
         D: embedded_hal_async::delay::DelayNs,
@@ -7758,9 +7766,9 @@ where
 
     /// Set accelerometer and gyroscope to continuous sampling mode (async version)
     ///
-    /// This configures the LP_CONFIG register to disable cycle modes, enabling
-    /// continuous sampling. This is required for the ACCEL_SMPLRT_DIV and
-    /// GYRO_SMPLRT_DIV registers to take effect.
+    /// This configures the `LP_CONFIG` register to disable cycle modes, enabling
+    /// continuous sampling. This is required for the `ACCEL_SMPLRT_DIV` and
+    /// `GYRO_SMPLRT_DIV` registers to take effect.
     ///
     /// # Arguments
     /// * `enable_accel` - Enable continuous mode for accelerometer
