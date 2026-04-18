@@ -27,7 +27,7 @@ NSS / CS     →    Level Shifter     → PA2 (Output)
 SCL / SCLK   →    Level Shifter     → PB13 (SPI SCK)
 SDA / SDI    →    Level Shifter     → PB15 (SPI MOSI)
 SDO / AD0    →    Level Shifter     → PB14 (SPI MISO)
-````
+```
 
 ## Building and Running
 
@@ -40,7 +40,7 @@ rustup target add thumbv7em-none-eabihf
 Build and run a specific example:
 
 ```bash
-cargo run --release --bin basic_reading_async
+cargo run --release --bin wake_on_motion_async
 ```
 
 ## Available Examples

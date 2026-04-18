@@ -17,8 +17,8 @@ use embassy_time::{Delay, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 
 use icm20948::{
-    power::{LowPowerConfig, LowPowerRate, WomMode},
     Icm20948Driver, InterruptConfig, InterruptPinConfig, SpiInterface,
+    power::{LowPowerConfig, LowPowerRate, WomMode},
 };
 
 bind_interrupts!(struct SpiIrqs {
@@ -93,9 +93,9 @@ async fn main(_spawner: Spawner) {
             info!("Motion detected! (Wakeup count: {})", motion_count);
 
             if let Ok(accel) = imu.read_accelerometer_raw().await {
-                let dx = accel.x.abs() % 16384;
-                let dy = accel.y.abs() % 16384;
-                let dz = accel.z.abs() % 16384;
+                let dx = (accel.x.unsigned_abs() as u32) % 16384;
+                let dy = (accel.y.unsigned_abs() as u32) % 16384;
+                let dz = (accel.z.unsigned_abs() as u32) % 16384;
 
                 let mut axis = "Unknown";
                 if dx > dy && dx > dz {

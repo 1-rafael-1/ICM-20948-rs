@@ -17,8 +17,8 @@ use embassy_time::{Delay, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
 
 use icm20948::{
-    sensors::{AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale},
     Icm20948Driver, InterruptConfig, InterruptPinConfig, SpiInterface,
+    sensors::{AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale},
 };
 
 bind_interrupts!(struct SpiIrqs {
@@ -75,7 +75,7 @@ async fn main(_spawner: Spawner) {
         active_low: false,
         open_drain: false,
         latch_enabled: true,
-        clear_on_any_read: true, // Automatically clear pin level upon any read operation (e.g., reading ADC)
+        clear_on_any_read: true, // Automatically clear the latched interrupt pin on any IMU register read (e.g., INT_STATUS or sensor data registers)
     };
     imu.configure_interrupt_pin(&int_pin_cfg).await.unwrap();
 
@@ -106,4 +106,3 @@ async fn main(_spawner: Spawner) {
             }
         }
     }
-}
