@@ -52,6 +52,10 @@ ahrs = { version = "0.8", default-features = false }
 nalgebra = { version = "0.34", default-features = false, features = ["libm"] }
 micromath = "2.1"
 
+[features]
+default = []
+dmp = ["icm20948/dmp"]
+
 [[bin]]
 name = "basic_reading"
 path = "src/basic_reading.rs"
@@ -99,3 +103,16 @@ path = "src/fifo_data_validation.rs"
 [[bin]]
 name = "low_power_mode"
 path = "src/low_power_mode.rs"
+
+[[bin]]
+name = "wake_on_motion"
+path = "src/wake_on_motion.rs"
+
+[[bin]]
+name = "hardware_interrupt"
+path = "src/hardware_interrupt.rs"
+
+[[bin]]
+name = "dmp_integration"
+path = "src/dmp_integration.rs"
+required-features = ["dmp"]

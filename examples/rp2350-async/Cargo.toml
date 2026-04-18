@@ -108,3 +108,16 @@ path = "src/fifo_data_validation_async.rs"
 [[bin]]
 name = "low_power_mode_async"
 path = "src/low_power_mode_async.rs"
+
+[[bin]]
+name = "wake_on_motion_async"
+path = "src/wake_on_motion_async.rs"
+
+[[bin]]
+name = "hardware_interrupt_async"
+path = "src/hardware_interrupt_async.rs"
+
+[[bin]]
+name = "dmp_integration_async"
+path = "src/dmp_integration_async.rs"
+required-features = ["dmp"]
