@@ -170,8 +170,12 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                     }
                 }
                 0x70 => {
-                    // FIFO_COUNTH register
-                    if !read.is_empty() {
+                    // FifoCount (16-bit): new impl reads both bytes in one transaction
+                    // (big-endian: high byte at read[0], low byte at read[1]).
+                    if read.len() >= 2 {
+                        read[0] = ((self.fifo_count >> 8) & 0xFF) as u8;
+                        read[1] = (self.fifo_count & 0xFF) as u8;
+                    } else if !read.is_empty() {
                         read[0] = ((self.fifo_count >> 8) & 0xFF) as u8;
                     }
                 }

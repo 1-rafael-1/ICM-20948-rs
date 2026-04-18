@@ -131,8 +131,12 @@ impl embedded_hal::i2c::I2c for MockI2c {
                     }
                 }
                 (0, 0x70) => {
-                    // FIFO_COUNTH register
-                    if !read.is_empty() {
+                    // FifoCount (16-bit): new impl reads both bytes in one transaction
+                    // (big-endian: high byte at read[0], low byte at read[1]).
+                    if read.len() >= 2 {
+                        read[0] = ((state.fifo_count >> 8) & 0xFF) as u8;
+                        read[1] = (state.fifo_count & 0xFF) as u8;
+                    } else if !read.is_empty() {
                         read[0] = ((state.fifo_count >> 8) & 0xFF) as u8;
                     }
                 }
@@ -254,7 +258,7 @@ fn test_fifo_read_efficiency_empty() {
 fn test_fifo_read_no_repeated_count_checks() {
     // CRITICAL TEST: Verify that FIFO count is only read ONCE
     // The old implementation would read count after every byte (2 register reads per byte!)
-    // The new implementation should read count only once (2 register reads total)
+    // The new implementation should read count only once (1 register read total, combined 16-bit read at 0x70)
 
     let i2c = MockI2c::with_fifo_count(50);
 
@@ -272,11 +276,11 @@ fn test_fifo_read_no_repeated_count_checks() {
 
     let count_reads = i2c.count_fifo_count_reads();
 
-    // Should have exactly 2 count register reads (FIFO_COUNTH + FIFO_COUNTL)
+    // Should have exactly 1 count register read (combined 16-bit read at 0x70)
     // OLD implementation would have 2 * (buffer_len - 1) = 98 reads!
     assert_eq!(
-        count_reads, 2,
-        "Should read FIFO count registers exactly twice (once for high, once for low), but got {}",
+        count_reads, 1,
+        "Should read FIFO count register exactly once (16-bit combined read at 0x70), but got {}",
         count_reads
     );
 }
