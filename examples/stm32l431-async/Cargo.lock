@@ -957,8 +957,10 @@ dependencies = [
 
 [[package]]
 name = "icm20948-rs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
+ "bitflags 2.11.0",
+ "cfg-if",
  "defmt 1.0.1",
  "device-driver",
  "embedded-hal 1.0.0",

@@ -52,6 +52,7 @@ pub fn create_mock_driver() -> (Icm20948Driver<MockInterface>, MockInterface) {
 }
 
 /// Assert that two floating point values are approximately equal
+#[allow(dead_code)]
 pub fn assert_float_eq(a: f32, b: f32, epsilon: f32) {
     let diff = (a - b).abs();
     assert!(

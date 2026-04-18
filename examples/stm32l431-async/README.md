@@ -31,10 +31,10 @@ SDO / AD0    →    Level Shifter     → PB14 (SPI MISO)
 
 ## Building and Running
 
-Ensure you have the ARM target installed that matches this example's build configuration:
+Ensure you have the correct ARM target installed for the STM32L431 (Cortex-M4F):
 
 ```bash
-rustup target add thumbv7em-none-eabi
+rustup target add thumbv7em-none-eabihf
 ```
 
 Build and run a specific example:
@@ -57,6 +57,7 @@ Each example includes documentation in its source file. Check the file's doc com
 ```bash
 cargo run --release --bin wake_on_motion_async
 cargo run --release --bin hardware_interrupt_async
+cargo run --release --bin dmp_integration_async
 ```
 
 ## Troubleshooting

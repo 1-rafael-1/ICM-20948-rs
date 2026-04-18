@@ -22,8 +22,8 @@
 //! - **Feature Enablement**: Which outputs (quaternion, calibrated data, etc.)
 //!
 //! The complete initialization writes 28 configuration values to DMP memory at specific
-//! addresses. These values are based on the InvenSense reference implementation and
-//! SparkFun's validated Arduino library.
+//! addresses. These values are based on the `InvenSense` reference implementation and
+//! `SparkFun`'s validated Arduino library.
 //!
 //! ## Feature Bits
 //!
@@ -32,16 +32,16 @@
 
 use crate::dmp::DmpConfig;
 
-/// Calculate GYRO_SF (Gyro Scaling Factor) for DMP
+/// Calculate `GYRO_SF` (Gyro Scaling Factor) for DMP
 ///
 /// This value depends on the gyro sample rate divider and the PLL correction value.
-/// The PLL value should be read from Bank 1, Register 0x28 (TIMEBASE_CORRECTION_PLL).
+/// The PLL value should be read from Bank 1, Register 0x28 (`TIMEBASE_CORRECTION_PLL`).
 ///
 /// # Arguments
 ///
-/// * `gyro_sample_rate_div` - Value from GYRO_SMPLRT_DIV register (0-255)
+/// * `gyro_sample_rate_div` - Value from `GYRO_SMPLRT_DIV` register (0-255)
 ///   - 0 = 1125 Hz, 1 = 562.5 Hz, 4 = 225 Hz, 9 = 112 Hz, 19 = 55 Hz
-/// * `pll_correction` - Value from TIMEBASE_CORRECTION_PLL register (typically 0x18)
+/// * `pll_correction` - Value from `TIMEBASE_CORRECTION_PLL` register (typically 0x18)
 ///
 /// # Formula
 ///
@@ -64,12 +64,12 @@ use crate::dmp::DmpConfig;
 /// assert_eq!(gyro_sf, 0x276FBC37);
 /// ```
 pub fn calculate_gyro_sf(gyro_sample_rate_div: u8, pll_correction: i8) -> u32 {
-    const MAGIC_CONSTANT: u64 = 264446880937391;
-    const MAGIC_CONSTANT_SCALE: u64 = 100000;
+    const MAGIC_CONSTANT: u64 = 264_446_880_937_391;
+    const MAGIC_CONSTANT_SCALE: u64 = 100_000;
     const GYRO_LEVEL: u8 = 4; // Always 4 regardless of FSR
 
-    let div = gyro_sample_rate_div as u64;
-    let pll = pll_correction as i16; // Sign-extend to i16
+    let div = u64::from(gyro_sample_rate_div);
+    let pll = i16::from(pll_correction); // Sign-extend to i16
 
     let result: u64 = if pll < 0 {
         // PLL has bit 7 set (negative when treated as signed)
@@ -119,7 +119,20 @@ impl DmpSampleRate {
         }
     }
 
-    /// Get ACCEL_ONLY_GAIN parameter for this rate
+    /// Get the accel sample rate divider for this rate
+    ///
+    /// Formula: ODR = 1125 Hz / (1 + divider)
+    /// Note: Returns a 16-bit value because the Accel divider is 12-bit
+    /// split across `ACCEL_SMPLRT_DIV_1` and `ACCEL_SMPLRT_DIV_2`.
+    pub const fn accel_sample_rate_div(&self) -> u16 {
+        match self {
+            Self::Hz56 => 19, // 1125 / 20 = 56.25 Hz
+            Self::Hz112 => 9, // 1125 / 10 = 112.5 Hz
+            Self::Hz225 => 4, // 1125 / 5 = 225 Hz
+        }
+    }
+
+    /// Get `ACCEL_ONLY_GAIN` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x03A49249
@@ -127,13 +140,13 @@ impl DmpSampleRate {
     /// - 225Hz: 0x00E8BA2E
     pub const fn accel_only_gain(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x03A49249,
-            Self::Hz112 => 0x01D1745D,
-            Self::Hz225 => 0x00E8BA2E,
+            Self::Hz56 => 0x03A4_9249,
+            Self::Hz112 => 0x01D1_745D,
+            Self::Hz225 => 0x00E8_BA2E,
         }
     }
 
-    /// Get ACCEL_ALPHA_VAR parameter for this rate
+    /// Get `ACCEL_ALPHA_VAR` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x34924925
@@ -141,13 +154,13 @@ impl DmpSampleRate {
     /// - 225Hz: 0x3D27D27D
     pub const fn accel_alpha_var(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x34924925,
-            Self::Hz112 => 0x3A492492,
-            Self::Hz225 => 0x3D27D27D,
+            Self::Hz56 => 0x3492_4925,
+            Self::Hz112 => 0x3A49_2492,
+            Self::Hz225 => 0x3D27_D27D,
         }
     }
 
-    /// Get ACCEL_A_VAR parameter for this rate
+    /// Get `ACCEL_A_VAR` parameter for this rate
     ///
     /// Validated values:
     /// - 56Hz: 0x0B6DB6DB
@@ -155,9 +168,9 @@ impl DmpSampleRate {
     /// - 225Hz: 0x02D82D83
     pub const fn accel_a_var(&self) -> u32 {
         match self {
-            Self::Hz56 => 0x0B6DB6DB,
-            Self::Hz112 => 0x05B6DB6E,
-            Self::Hz225 => 0x02D82D83,
+            Self::Hz56 => 0x0B6D_B6DB,
+            Self::Hz112 => 0x05B6_DB6E,
+            Self::Hz225 => 0x02D8_2D83,
         }
     }
 
@@ -236,7 +249,7 @@ impl ArbitrarySampleRate {
         let gyro_div = if hz >= 1100 {
             0
         } else {
-            ((1100 / hz as u32).saturating_sub(1)).min(255) as u8
+            ((1100 / u32::from(hz)).saturating_sub(1)).min(255) as u8
         };
 
         // If this exactly matches a validated rate, return None
@@ -260,9 +273,9 @@ impl ArbitrarySampleRate {
             (DmpSampleRate::Hz112, DmpSampleRate::Hz225)
         };
 
-        let lower_hz = 1100.0 / (1.0 + lower_rate.gyro_sample_rate_div() as f32);
-        let upper_hz = 1100.0 / (1.0 + upper_rate.gyro_sample_rate_div() as f32);
-        let hz_f = hz as f32;
+        let lower_hz = 1100.0 / (1.0 + f32::from(lower_rate.gyro_sample_rate_div()));
+        let upper_hz = 1100.0 / (1.0 + f32::from(upper_rate.gyro_sample_rate_div()));
+        let hz_f = f32::from(hz);
 
         // Interpolation factor
         let t = (hz_f - lower_hz) / (upper_hz - lower_hz);
@@ -291,6 +304,7 @@ impl ArbitrarySampleRate {
 
     /// Linear interpolation for u32 values
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     fn lerp_u32(a: u32, b: u32, t: f32) -> u32 {
         let a_f = a as f32;
         let b_f = b as f32;
@@ -310,59 +324,330 @@ impl ArbitrarySampleRate {
     }
 }
 
-/// DMP feature control bits
-///
-/// These bits are used in the DMP feature mask to enable/disable specific
-/// DMP processing features.
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct DmpFeatures;
+bitflags::bitflags! {
+    /// DMP Data Output Control 1 (DATA_OUT_CTL1) bit masks
+    ///
+    /// These bits control what sensor data and fusion outputs are directly written into the FIFO.
+    /// Do NOT enable base sensor bits here (like ACCEL) just because a fusion algorithm (like QUAT6)
+    /// needs them; only enable them if you explicitly want the raw data in the FIFO packet.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DmpControl1Flags: u16 {
+        /// 16-bit accelerometer output (bit 15)
+        const ACCEL              = 0x8000;
+        /// 16-bit gyroscope output (bit 14)
+        const GYRO               = 0x4000;
+        /// 16-bit compass (magnetometer) output (bit 13)
+        const COMPASS            = 0x2000;
+        /// 16-bit ALS (Ambient Light Sensor) (bit 12)
+        const ALS                = 0x1000;
+        /// 32-bit 6-axis quaternion (accel + gyro) (bit 11)
+        const QUAT6              = 0x0800;
+        /// 32-bit 9-axis quaternion + heading accuracy (bit 10)
+        const QUAT9              = 0x0400;
+        /// 6-axis pedometer quaternion output (bit 9)
+        const PQUAT6             = 0x0200;
+        /// 32-bit Geomag rotation vector + heading accuracy (bit 8)
+        const GEOMAG             = 0x0100;
+        /// 16-bit Pressure (bit 7)
+        const PRESSURE           = 0x0080;
+        /// 32-bit calibrated gyroscope (bit 6)
+        const CALIBRATED_GYRO    = 0x0040;
+        /// 32-bit calibrated compass (magnetometer) (bit 5)
+        const CALIBRATED_COMPASS = 0x0020;
+        /// Pedometer Step Detector (bit 4)
+        const STEP_DETECTOR      = 0x0010;
+        /// Header 2 enable (required for accuracy reporting and pedometer) (bit 3)
+        const HEADER2            = 0x0008;
+    }
+
+    /// DMP Data Output Control 2 (DATA_OUT_CTL2) bit masks
+    ///
+    /// These bits control accuracy reporting in the DMP output packets (header2).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DmpControl2Flags: u16 {
+        /// Accelerometer accuracy bit
+        const ACCEL_ACCURACY   = 0x4000;
+        /// Gyroscope accuracy bit
+        const GYRO_ACCURACY    = 0x2000;
+        /// Compass (magnetometer) accuracy bit
+        const COMPASS_ACCURACY = 0x1000;
+    }
+
+    /// DMP Data Ready Status (DATA_RDY_STATUS) bit masks
+    ///
+    /// These bits control which physical sensors trigger data ready events for the DMP to process.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DmpDataReadyStatus: u16 {
+        /// Gyroscope data ready
+        const GYRO    = 0x0001;
+        /// Accelerometer data ready
+        const ACCEL   = 0x0002;
+        /// Compass (magnetometer) data ready
+        const COMPASS = 0x0008;
+    }
+
+    /// DMP Motion Event Control (MOTION_EVENT_CTL) bit masks
+    ///
+    /// These bits control which calibration and sensor fusion engines are enabled internally.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DmpMotionEventControl: u16 {
+        /// Geomagnetic rotation vector enable
+        const GEOMAG              = 0x0008;
+        /// 9-axis sensor fusion enable
+        const NINE_AXIS           = 0x0040;
+        /// Compass (magnetometer) calibration enable
+        const COMPASS_CALIBR      = 0x0080;
+        /// Gyroscope calibration enable
+        const GYRO_CALIBR         = 0x0100;
+        /// Accelerometer calibration enable
+        const ACCEL_CALIBR        = 0x0200;
+        /// Pedometer interrupt enable
+        const PEDOMETER_INTERRUPT = 0x2000;
+    }
+
+
+    /// Logical DMP Features
+    ///
+    /// This strictly aligns with the boolean configuration fields in `DmpConfig`.
+    /// It acts as the single source of truth for the user's intended configuration,
+    /// providing a bridge between high-level functional requests and low-level
+    /// hardware register settings.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DmpFeatures: u32 {
+        /// Enable 6-axis quaternion output (accel + gyro)
+        const QUATERNION_6AXIS       = 1 << 0;
+        /// Enable PQuat6 Pedometer Quaternion (accel + gyro)
+        const QUATERNION_P6AXIS       = 1 << 1;
+        /// Enable 9-axis quaternion output (accel + gyro + mag)
+        const QUATERNION_9AXIS       = 1 << 2;
+        /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
+        const GEOMAG_ROTATION_VECTOR = 1 << 3;
+        /// Enable calibrated accelerometer output
+        const CALIBRATED_ACCEL       = 1 << 4;
+        /// Enable calibrated gyroscope output
+        const CALIBRATED_GYRO        = 1 << 5;
+        /// Enable calibrated magnetometer output
+        const CALIBRATED_MAG         = 1 << 6;
+        /// Enable raw accelerometer output from DMP
+        const RAW_ACCEL              = 1 << 7;
+        /// Enable raw gyroscope output from DMP
+        const RAW_GYRO               = 1 << 8;
+        /// Enable raw magnetometer output from DMP
+        const RAW_MAG                = 1 << 9;
+        /// Enable pedometer step detector (triggers an event on step)
+        const STEP_DETECTOR          = 1 << 10;
+        /// Enable pedometer step counter (tracks total steps)
+        const STEP_COUNTER           = 1 << 11;
+
+        // /// Enable significant motion detection
+        // const SIGNIFICANT_MOTION       = 1 << 12;
+        // /// Enable tilt detector
+        // const TILT_DETECTOR            = 1 << 13;
+        // /// Enable pickup/flip detector
+        // const PICKUP_DETECTOR          = 1 << 14;
+        // /// Enable activity classification (BAC)
+        // const ACTIVITY_CLASSIFICATION  = 1 << 15;
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DmpControl1Flags {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "DmpControl1Flags({:x})", self.bits());
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DmpControl2Flags {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "DmpControl2Flags({:x})", self.bits());
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DmpDataReadyStatus {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "DmpDataReadyStatus({:x})", self.bits());
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DmpMotionEventControl {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "DmpMotionEventControl({:x})", self.bits());
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DmpFeatures {
+    fn format(&self, fmt: defmt::Formatter) {
+        defmt::write!(fmt, "DmpFeatures({:x})", self.bits());
+    }
+}
 
 impl DmpFeatures {
-    /// 16-bit accelerometer (bit 15)
-    pub const ACCEL: u16 = 0x8000;
+    /// Convert logical features to `DATA_OUT_CTL2` (Accuracy Reporting)
+    pub fn as_control2(&self) -> DmpControl2Flags {
+        let mut c2 = DmpControl2Flags::empty();
+        if self.intersects(Self::RAW_ACCEL | Self::CALIBRATED_ACCEL) {
+            c2.insert(DmpControl2Flags::ACCEL_ACCURACY);
+        }
 
-    /// 16-bit gyroscope (bit 14)
-    pub const GYRO: u16 = 0x4000;
+        if self.intersects(Self::RAW_GYRO | Self::CALIBRATED_GYRO) {
+            c2.insert(DmpControl2Flags::GYRO_ACCURACY);
+        }
 
-    /// 16-bit compass (bit 13)
-    pub const COMPASS: u16 = 0x2000;
+        if self.intersects(
+            Self::RAW_MAG
+                | Self::CALIBRATED_MAG
+                | Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR,
+        ) {
+            c2.insert(DmpControl2Flags::COMPASS_ACCURACY);
+        }
+        c2
+    }
 
-    /// 6-axis quaternion output (gyro + accel) (bit 11)
-    pub const QUAT6: u16 = 0x0800;
+    /// Convert logical features to `DATA_OUT_CTL1` mask (What goes into FIFO)
+    pub fn as_control1(&self) -> DmpControl1Flags {
+        let mut c1 = DmpControl1Flags::empty();
 
-    /// 9-axis quaternion output (gyro + accel + mag) (bit 10)
-    pub const QUAT9: u16 = 0x0400;
+        // Map logical fusion outputs
+        if self.intersects(Self::QUATERNION_6AXIS) {
+            c1.insert(DmpControl1Flags::QUAT6);
+        }
+        if self.intersects(Self::QUATERNION_P6AXIS) {
+            c1.insert(DmpControl1Flags::PQUAT6);
+        }
+        if self.intersects(Self::QUATERNION_9AXIS) {
+            c1.insert(DmpControl1Flags::QUAT9);
+        }
+        if self.intersects(Self::GEOMAG_ROTATION_VECTOR) {
+            c1.insert(DmpControl1Flags::GEOMAG);
+        }
 
-    /// Geomagnetic rotation vector (9-axis with heading) (bit 8)
-    pub const GEOMAG_ROTATION_VECTOR: u16 = 0x0100;
+        // Map base physical outputs
+        // Note: Linear acceleration is derived from raw accel and gravity in the driver/host,
+        // so we must put RAW_ACCEL into the FIFO if linear_acceleration is requested.
+        if self.intersects(Self::RAW_ACCEL | Self::CALIBRATED_ACCEL) {
+            c1.insert(DmpControl1Flags::ACCEL);
+        }
+        if self.intersects(Self::RAW_GYRO) {
+            c1.insert(DmpControl1Flags::GYRO);
+        }
+        if self.intersects(Self::RAW_MAG | Self::CALIBRATED_MAG) {
+            c1.insert(DmpControl1Flags::COMPASS);
+        }
 
-    /// 32-bit calibrated gyroscope (bit 6)
-    pub const SEND_CAL_GYRO: u16 = 0x0040;
+        // Calibrated outputs
+        if self.intersects(Self::CALIBRATED_GYRO) {
+            c1.insert(DmpControl1Flags::CALIBRATED_GYRO | DmpControl1Flags::GYRO);
+        }
+        if self.intersects(Self::CALIBRATED_MAG) {
+            c1.insert(DmpControl1Flags::CALIBRATED_COMPASS);
+        }
+        // Pedometer
+        if self.intersects(Self::STEP_DETECTOR | Self::STEP_COUNTER) {
+            c1.insert(DmpControl1Flags::STEP_DETECTOR);
+        }
+        // Must include HEADER2 (0x0008) ONLY IF CTL2 is used OR pedometer is active
+        if !self.as_control2().is_empty()
+            || self.intersects(Self::STEP_DETECTOR | Self::STEP_COUNTER)
+            || self.intersects(
+                Self::QUATERNION_6AXIS | Self::QUATERNION_9AXIS | Self::GEOMAG_ROTATION_VECTOR,
+            )
+            || self.intersects(
+                Self::RAW_ACCEL
+                    | Self::RAW_GYRO
+                    | Self::RAW_MAG
+                    | Self::CALIBRATED_ACCEL
+                    | Self::CALIBRATED_GYRO
+                    | Self::CALIBRATED_MAG,
+            )
+        {
+            c1.insert(DmpControl1Flags::HEADER2);
+        }
+        c1
+    }
 
-    /// 32-bit calibrated compass (bit 5)
-    pub const SEND_CAL_COMPASS: u16 = 0x0020;
+    /// Convert logical features to `DATA_RDY_STATUS` mask (Trigger sources)
+    pub fn as_data_ready(&self) -> DmpDataReadyStatus {
+        let mut rdy = DmpDataReadyStatus::empty();
 
-    /// Pedometer/step detector (bit 4)
-    pub const PEDOMETER: u16 = 0x0010;
+        if self.intersects(
+            Self::QUATERNION_6AXIS
+                | Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_ACCEL
+                | Self::CALIBRATED_ACCEL
+                | Self::STEP_DETECTOR
+                | Self::STEP_COUNTER,
+        ) {
+            rdy.insert(DmpDataReadyStatus::ACCEL);
+        }
+        if self.intersects(
+            Self::QUATERNION_6AXIS
+                | Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_GYRO
+                | Self::CALIBRATED_GYRO,
+        ) {
+            rdy.insert(DmpDataReadyStatus::GYRO);
+        }
+        if self.intersects(
+            Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_MAG
+                | Self::CALIBRATED_MAG,
+        ) {
+            rdy.insert(DmpDataReadyStatus::COMPASS);
+        }
+        rdy
+    }
 
-    /// Header 2 (bit 3)
-    pub const HEADER2: u16 = 0x0008;
+    /// Convert logical features to `MOTION_EVENT_CTL` mask (Fusion & Calibration Engines)
+    pub fn as_motion_event(&self) -> DmpMotionEventControl {
+        let mut me = DmpMotionEventControl::empty();
 
-    /// Game rotation vector (6-axis, no magnetometer) - uses QUAT6
-    pub const GAME_ROTATION_VECTOR: u16 = Self::QUAT6;
+        if self.intersects(
+            Self::QUATERNION_6AXIS
+                | Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_ACCEL
+                | Self::CALIBRATED_ACCEL,
+        ) {
+            me.insert(DmpMotionEventControl::ACCEL_CALIBR);
+        }
+        if self.intersects(
+            Self::QUATERNION_6AXIS
+                | Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_GYRO
+                | Self::CALIBRATED_GYRO,
+        ) {
+            me.insert(DmpMotionEventControl::GYRO_CALIBR);
+        }
+        if self.intersects(
+            Self::QUATERNION_9AXIS
+                | Self::GEOMAG_ROTATION_VECTOR
+                | Self::RAW_MAG
+                | Self::CALIBRATED_MAG,
+        ) {
+            me.insert(DmpMotionEventControl::COMPASS_CALIBR);
+        }
 
-    /// Send raw accelerometer data - uses ACCEL
-    pub const SEND_RAW_ACCEL: u16 = Self::ACCEL;
+        if self.intersects(Self::QUATERNION_9AXIS) {
+            me.insert(DmpMotionEventControl::NINE_AXIS);
+        }
+        if self.intersects(Self::GEOMAG_ROTATION_VECTOR) {
+            me.insert(DmpMotionEventControl::GEOMAG);
+        }
+        if self.intersects(Self::STEP_DETECTOR | Self::STEP_COUNTER) {
+            me.insert(DmpMotionEventControl::PEDOMETER_INTERRUPT);
+        }
 
-    /// Send raw gyroscope data - uses GYRO
-    pub const SEND_RAW_GYRO: u16 = Self::GYRO;
-
-    /// Send calibrated accelerometer data - not directly supported, use ACCEL
-    pub const SEND_CAL_ACCEL: u16 = Self::ACCEL;
-
-    /// Gyroscope calibration - enabled via MOTION_EVENT_CTL, not feature mask
-    pub const GYRO_CALIBRATION: u16 = 0x0000;
+        me
+    }
 }
 
 /// DMP memory addresses for configuration
@@ -391,11 +676,8 @@ impl DmpMemoryAddresses {
     /// Data ready status
     pub const DATA_RDY_STATUS: u16 = 0x008A;
 
-    /// Sample rate divider
-    pub const ODR_RATE: u16 = 0x029C;
-
     /// Gyroscope scaling factor (depends on sample rate and FSR)
-    /// Formula: GYRO_SF = (sample_rate_div + 1) * gyro_fsr_scale
+    /// Formula: `GYRO_SF` = (`sample_rate_div` + 1) * `gyro_fsr_scale`
     pub const GYRO_SF: u16 = 0x0130;
 
     /// Accelerometer scaling factor 1 (for DMP internal alignment)
@@ -407,122 +689,66 @@ impl DmpMemoryAddresses {
     pub const ACC_SCALE2: u16 = 0x04F4;
 
     /// Compass (magnetometer) mount matrix element (0,0)
-    pub const CPASS_MTX_00: u16 = 0x04B4;
+    pub const CPASS_MTX_00: u16 = 0x0170;
     /// Compass (magnetometer) mount matrix element (0,1)
-    pub const CPASS_MTX_01: u16 = 0x04B8;
+    pub const CPASS_MTX_01: u16 = 0x0174;
     /// Compass (magnetometer) mount matrix element (0,2)
-    pub const CPASS_MTX_02: u16 = 0x04BC;
+    pub const CPASS_MTX_02: u16 = 0x0178;
     /// Compass (magnetometer) mount matrix element (1,0)
-    pub const CPASS_MTX_10: u16 = 0x04C0;
+    pub const CPASS_MTX_10: u16 = 0x017C;
     /// Compass (magnetometer) mount matrix element (1,1)
-    pub const CPASS_MTX_11: u16 = 0x04C4;
+    pub const CPASS_MTX_11: u16 = 0x0180;
     /// Compass (magnetometer) mount matrix element (1,2)
-    pub const CPASS_MTX_12: u16 = 0x04C8;
+    pub const CPASS_MTX_12: u16 = 0x0184;
     /// Compass (magnetometer) mount matrix element (2,0)
-    pub const CPASS_MTX_20: u16 = 0x04CC;
+    pub const CPASS_MTX_20: u16 = 0x0188;
     /// Compass (magnetometer) mount matrix element (2,1)
-    pub const CPASS_MTX_21: u16 = 0x04D0;
+    pub const CPASS_MTX_21: u16 = 0x018C;
     /// Compass (magnetometer) mount matrix element (2,2)
-    pub const CPASS_MTX_22: u16 = 0x04D4;
+    pub const CPASS_MTX_22: u16 = 0x0190;
 
     /// Body to Sensor mount matrix element (0,0)
-    pub const B2S_MTX_00: u16 = 0x04D8;
+    pub const B2S_MTX_00: u16 = 0x0D00;
     /// Body to Sensor mount matrix element (0,1)
-    pub const B2S_MTX_01: u16 = 0x04DC;
+    pub const B2S_MTX_01: u16 = 0x0D04;
     /// Body to Sensor mount matrix element (0,2)
-    pub const B2S_MTX_02: u16 = 0x04E0;
+    pub const B2S_MTX_02: u16 = 0x0D08;
     /// Body to Sensor mount matrix element (1,0)
-    pub const B2S_MTX_10: u16 = 0x04E4;
+    pub const B2S_MTX_10: u16 = 0x0D0C;
     /// Body to Sensor mount matrix element (1,1)
-    pub const B2S_MTX_11: u16 = 0x04E8;
+    pub const B2S_MTX_11: u16 = 0x0D10;
     /// Body to Sensor mount matrix element (1,2)
-    pub const B2S_MTX_12: u16 = 0x04EC;
+    pub const B2S_MTX_12: u16 = 0x0D14;
     /// Body to Sensor mount matrix element (2,0)
-    pub const B2S_MTX_20: u16 = 0x04F0;
+    pub const B2S_MTX_20: u16 = 0x0D18;
     /// Body to Sensor mount matrix element (2,1)
-    pub const B2S_MTX_21: u16 = 0x04F4;
+    pub const B2S_MTX_21: u16 = 0x0D1C;
     /// Body to Sensor mount matrix element (2,2)
-    pub const B2S_MTX_22: u16 = 0x04F8;
+    pub const B2S_MTX_22: u16 = 0x0D20;
 
     /// Gyroscope full scale setting (2^28 for 2000dps)
     pub const GYRO_FULLSCALE: u16 = 0x048C;
 
     /// Accel only gain
-    pub const ACCEL_ONLY_GAIN: u16 = 0x0500;
+    pub const ACCEL_ONLY_GAIN: u16 = 0x010C;
 
     /// Accel alpha variance
-    pub const ACCEL_ALPHA_VAR: u16 = 0x0504;
+    pub const ACCEL_ALPHA_VAR: u16 = 0x05B0;
 
     /// Accel A variance
-    pub const ACCEL_A_VAR: u16 = 0x0508;
+    pub const ACCEL_A_VAR: u16 = 0x05C0;
 
     /// Accel calibration rate
-    pub const ACCEL_CAL_RATE: u16 = 0x050C;
+    pub const ACCEL_CAL_RATE: u16 = 0x05E4;
 
     /// Compass time buffer (magnetometer sample rate)
-    pub const CPASS_TIME_BUFFER: u16 = 0x050E;
-}
-
-/// DMP Data Output Control 2 (DATA_OUT_CTL2) bit masks
-///
-/// These bits control accuracy reporting in the DMP output packets (header2)
-pub struct DmpDataOutputControl2;
-
-impl DmpDataOutputControl2 {
-    /// Accelerometer accuracy bit
-    pub const ACCEL_ACCURACY: u16 = 0x4000;
-
-    /// Gyroscope accuracy bit
-    pub const GYRO_ACCURACY: u16 = 0x2000;
-
-    /// Compass (magnetometer) accuracy bit
-    pub const COMPASS_ACCURACY: u16 = 0x1000;
-}
-
-/// DMP Data Ready Status (DATA_RDY_STATUS) bit masks
-///
-/// These bits control which sensors trigger data ready events
-pub struct DmpDataReadyStatus;
-
-impl DmpDataReadyStatus {
-    /// Gyroscope data ready
-    pub const GYRO: u16 = 0x0001;
-
-    /// Accelerometer data ready
-    pub const ACCEL: u16 = 0x0002;
-
-    /// Compass (magnetometer) data ready
-    pub const COMPASS: u16 = 0x0008;
-}
-
-/// DMP Motion Event Control (MOTION_EVENT_CTL) bit masks
-///
-/// These bits control calibration and sensor fusion features
-pub struct DmpMotionEventControl;
-
-impl DmpMotionEventControl {
-    /// Geomagnetic rotation vector enable
-    pub const GEOMAG: u16 = 0x0008;
-
-    /// 9-axis sensor fusion enable
-    pub const NINE_AXIS: u16 = 0x0040;
-
-    /// Compass (magnetometer) calibration enable
-    pub const COMPASS_CALIBR: u16 = 0x0080;
-
-    /// Gyroscope calibration enable
-    pub const GYRO_CALIBR: u16 = 0x0100;
-
-    /// Accelerometer calibration enable
-    pub const ACCEL_CALIBR: u16 = 0x0200;
-
-    /// Pedometer interrupt enable
-    pub const PEDOMETER_INTERRUPT: u16 = 0x2000;
+    pub const CPASS_TIME_BUFFER: u16 = 0x070E;
 }
 
 /// DMP Output Data Rate (ODR) register addresses
 ///
 /// These registers control the output rate for each DMP feature
+/// The value to write is calculated as: Value = (DMP running rate (225Hz) / desired ODR) - 1.
 pub struct DmpOdrRegisters;
 
 impl DmpOdrRegisters {
@@ -546,9 +772,21 @@ impl DmpOdrRegisters {
 
     /// ODR for calibrated compass
     pub const CPASS_CALIBR: u16 = 0x00B4;
+
+    /// ODR for Ambient Light Sensor (ALS)
+    pub const ALS: u16 = 0x00B2;
+
+    /// ODR for 6-axis pedometer quaternion
+    pub const PQUAT6: u16 = 0x00A4;
+
+    /// ODR for Geomagnetic Rotation Vector
+    pub const GEOMAG: u16 = 0x00A0;
+
+    /// ODR for pressure sensor
+    pub const PRESSURE: u16 = 0x00BC;
 }
 
-/// DMP Output Data Rate Counter (ODR_CNTR) register addresses
+/// DMP Output Data Rate Counter (`ODR_CNTR`) register addresses
 ///
 /// These counters must be reset (set to 0) when changing ODR values
 pub struct DmpOdrCounterRegisters;
@@ -574,6 +812,18 @@ impl DmpOdrCounterRegisters {
 
     /// ODR counter for calibrated compass
     pub const CPASS_CALIBR: u16 = 0x0094;
+
+    /// ODR counter for Ambient Light Sensor (ALS)
+    pub const ALS: u16 = 0x0092;
+
+    /// ODR counter for 6-axis pedometer quaternion
+    pub const PQUAT6: u16 = 0x0084;
+
+    /// ODR counter for Geomagnetic Rotation Vector
+    pub const GEOMAG: u16 = 0x0080;
+
+    /// ODR counter for pressure sensor
+    pub const PRESSURE: u16 = 0x009C;
 }
 
 /// DMP packet header bits
@@ -585,26 +835,56 @@ impl DmpOdrCounterRegisters {
 pub struct DmpPacketHeader;
 
 impl DmpPacketHeader {
-    /// Header bit for 6-axis quaternion
-    pub const QUAT6_BIT: u16 = 0x0001;
-
-    /// Header bit for 9-axis quaternion
-    pub const QUAT9_BIT: u16 = 0x0002;
-
-    /// Header bit for accelerometer data
-    pub const ACCEL_BIT: u16 = 0x0004;
-
-    /// Header bit for gyroscope data
-    pub const GYRO_BIT: u16 = 0x0008;
-
+    /// Header bit for secondary header (Header 2)
+    pub const HEADER2_BIT: u16 = 0x0008;
+    /// Header bit for pedometer step detector
+    pub const STEP_BIT: u16 = 0x0010;
+    /// Header bit for calibrated compass (magnetometer)
+    pub const COMPASS_CAL_BIT: u16 = 0x0020;
     /// Header bit for calibrated gyroscope
-    pub const CAL_GYRO_BIT: u16 = 0x0010;
+    pub const GYRO_CAL_BIT: u16 = 0x0040;
+    /// Header bit for pressure sensor data
+    pub const PRESSURE_BIT: u16 = 0x0080;
+    /// Header bit for geomagnetic rotation vector
+    pub const GEOMAG_BIT: u16 = 0x0100;
+    /// Header bit for 6-axis pedometer quaternion
+    pub const PQUAT6_BIT: u16 = 0x0200;
+    /// Header bit for 9-axis quaternion
+    pub const QUAT9_BIT: u16 = 0x0400;
+    /// Header bit for 6-axis quaternion
+    pub const QUAT6_BIT: u16 = 0x0800;
+    /// Header bit for ALS (Ambient Light Sensor)
+    pub const ALS_BIT: u16 = 0x1000;
+    /// Header bit for raw compass (magnetometer) data
+    pub const COMPASS_BIT: u16 = 0x2000;
+    /// Header bit for raw gyroscope data
+    pub const GYRO_BIT: u16 = 0x4000;
+    /// Header bit for raw accelerometer data
+    pub const ACCEL_BIT: u16 = 0x8000;
+}
 
-    /// Header bit for calibrated accelerometer
-    pub const CAL_ACCEL_BIT: u16 = 0x0020;
+/// DMP packet header 2 bits
+///
+/// The secondary header indicates accuracy and additional event data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct DmpPacketHeader2;
 
-    /// Header bit for step counter
-    pub const STEP_BIT: u16 = 0x0040;
+impl DmpPacketHeader2 {
+    /// Header 2 bit for secondary on/off
+    pub const SECONDARY_ON_OFF_BIT: u16 = 0x0040;
+    /// Header 2 bit for activity recognition
+    pub const ACTIVITY_RECOG_BIT: u16 = 0x0080;
+    /// Header 2 bit for pickup detection
+    pub const PICKUP_BIT: u16 = 0x0400;
+    /// Header 2 bit for FSYNC detection
+    pub const FSYNC_BIT: u16 = 0x0800;
+    /// Header 2 bit for compass accuracy
+    pub const COMPASS_ACCURACY_BIT: u16 = 0x1000;
+    /// Header 2 bit for gyroscope accuracy
+    pub const GYRO_ACCURACY_BIT: u16 = 0x2000;
+    /// Header 2 bit for accelerometer accuracy
+    pub const ACCEL_ACCURACY_BIT: u16 = 0x4000;
 }
 
 /// DMP packet sizes (in bytes)
@@ -612,126 +892,206 @@ impl DmpPacketHeader {
 pub struct DmpPacketSize;
 
 impl DmpPacketSize {
-    /// Size of quaternion data (4 × i32 = 16 bytes)
-    pub const QUATERNION: usize = 16;
+    /// Size of packet header
+    pub const HEADER: usize = 2;
+
+    /// Size of packet secondary header
+    pub const HEADER2: usize = 2;
+
+    /// Every packet ends with a 2-byte footer
+    pub const FOOTER: usize = 2;
 
     /// Size of 3-axis data (3 × i16 = 6 bytes)
-    pub const ACCEL_GYRO: usize = 6;
+    pub const ACCEL_COMPASS: usize = 6;
+
+    /// Size of raw gyro (3 × i16 data + 3 × i16 bias = 12 bytes)
+    pub const RAW_GYRO: usize = 12;
+
+    /// Size of 6-axis quaternion data (3 × i32 = 12 bytes)
+    pub const QUAT6: usize = 12;
+
+    /// Size of 9-axis quaternion data (3 × i32 + 1 × u16 accuracy = 14 bytes)
+    pub const QUAT9: usize = 14;
 
     /// Size of calibrated gyro data (3 × i32 = 12 bytes)
     pub const CAL_GYRO: usize = 12;
 
-    /// Size of packet header
-    pub const HEADER: usize = 2;
+    /// Size of calibrated compass data (3 × i32 = 12 bytes)
+    pub const CAL_COMPASS: usize = 12;
+
+    /// Size of pedometer data (4 bytes)
+    pub const PEDOMETER: usize = 4;
+
+    /// Size of accelerometer accuracy data (1 × u16 = 2 bytes)
+    pub const ACCEL_ACCURACY: usize = 2;
+
+    /// Size of gyroscope accuracy data (1 × u16 = 2 bytes)
+    pub const GYRO_ACCURACY: usize = 2;
+
+    /// Size of compass (magnetometer) accuracy data (1 × u16 = 2 bytes)
+    pub const COMPASS_ACCURACY: usize = 2;
+
+    /// Size of Ambient Light Sensor data (8 bytes)
+    pub const ALS: usize = 8;
+
+    /// Size of 6-axis Pedometer Quaternion data (6 bytes)
+    pub const PQUAT6: usize = 6;
+
+    /// Size of Pressure sensor data (6 bytes)
+    pub const PRESSURE: usize = 6;
+
+    /// Absolute maximum possible packet size for buffer allocation
+    pub const MAX_PACKET_SIZE: usize = 128;
 }
 
 impl DmpConfig {
-    /// Convert configuration to DMP feature mask
-    ///
-    /// This creates a 16-bit feature mask that can be written to the DMP
-    /// to enable the configured features.
-    ///
-    /// When any feature requires accuracy reporting (quaternions, calibrated sensors),
-    /// the HEADER2 bit (0x0008) is automatically added to enable accuracy data in packets.
-    pub fn to_feature_mask(&self) -> u16 {
-        let mut mask = 0u16;
+    /// Consolidate user configuration into logical DMP features
+    pub fn get_active_features(&self) -> DmpFeatures {
+        let mut f = DmpFeatures::empty();
 
-        if self.quaternion_6axis {
-            mask |= DmpFeatures::QUAT6;
-        }
-
-        if self.quaternion_9axis {
-            mask |= DmpFeatures::QUAT9;
-        }
-
-        if self.game_rotation_vector {
-            mask |= DmpFeatures::GAME_ROTATION_VECTOR;
-        }
-
-        if self.geomag_rotation_vector {
-            mask |= DmpFeatures::GEOMAG_ROTATION_VECTOR;
+        let quat9_enabled = self.quaternion_9axis;
+        let mut geomag_enabled = self.geomag_rotation_vector;
+        if quat9_enabled && geomag_enabled {
+            #[cfg(feature = "defmt")]
+            defmt::warn!(
+                "DmpConfig Conflict: Both QUATERNION_9AXIS and GEOMAG_ROTATION_VECTOR enabled. They are mutually exclusive. GEOMAG will be ignored."
+            );
+            geomag_enabled = false;
         }
 
         if self.calibrated_accel {
-            mask |= DmpFeatures::SEND_CAL_ACCEL;
+            #[cfg(feature = "defmt")]
+            defmt::info!(
+                "DmpConfig Conflict: DMP only outputs Raw Accel + Accuracy. Host handles calibration."
+            );
         }
 
+        if quat9_enabled {
+            f.insert(DmpFeatures::QUATERNION_9AXIS);
+        } else if geomag_enabled {
+            f.insert(DmpFeatures::GEOMAG_ROTATION_VECTOR);
+        }
+
+        if self.quaternion_6axis {
+            f.insert(DmpFeatures::QUATERNION_6AXIS);
+        }
+        if self.quaternion_p6axis {
+            f.insert(DmpFeatures::QUATERNION_P6AXIS);
+        }
+        if self.calibrated_accel {
+            f.insert(DmpFeatures::CALIBRATED_ACCEL);
+        }
         if self.calibrated_gyro {
-            mask |= DmpFeatures::SEND_CAL_GYRO | DmpFeatures::GYRO_CALIBRATION;
+            f.insert(DmpFeatures::CALIBRATED_GYRO);
         }
-
+        if self.calibrated_mag {
+            f.insert(DmpFeatures::CALIBRATED_MAG);
+        }
         if self.raw_accel {
-            mask |= DmpFeatures::SEND_RAW_ACCEL;
+            f.insert(DmpFeatures::RAW_ACCEL);
         }
-
         if self.raw_gyro {
-            mask |= DmpFeatures::SEND_RAW_GYRO;
+            f.insert(DmpFeatures::RAW_GYRO);
+        }
+        if self.raw_mag {
+            f.insert(DmpFeatures::RAW_MAG);
+        }
+        if self.step_detector {
+            f.insert(DmpFeatures::STEP_DETECTOR);
+        }
+        if self.step_counter {
+            f.insert(DmpFeatures::STEP_COUNTER);
         }
 
-        // Add HEADER2 bit when accuracy data is needed
-        // This enables the accuracy reporting in DATA_OUT_CTL2
-        if self.quaternion_6axis
-            || self.quaternion_9axis
-            || self.game_rotation_vector
-            || self.geomag_rotation_vector
-            || self.calibrated_accel
-            || self.calibrated_gyro
-            || self.calibrated_mag
-        {
-            mask |= DmpFeatures::HEADER2;
-        }
+        // if self.significant_motion {
+        //     f.insert(DmpFeatures::SIGNIFICANT_MOTION);
+        // }
+        // if self.tilt_detector {
+        //     f.insert(DmpFeatures::TILT_DETECTOR);
+        // }
+        // if self.pickup_detector {
+        //     f.insert(DmpFeatures::PICKUP_DETECTOR);
+        // }
+        // if self.activity_classification {
+        //     f.insert(DmpFeatures::ACTIVITY_CLASSIFICATION);
+        // }
 
-        mask
+        f
     }
 
     /// Calculate expected FIFO packet size based on configuration
     ///
-    /// This calculates how many bytes each DMP packet will contain based on
-    /// which features are enabled. This is useful for reading the correct
-    /// amount of data from the FIFO.
+    /// This calculates how many bytes each DMP packet will contain by strictly parsing
+    /// the generated `DATA_OUT_CTL1` mask, ensuring total alignment with the hardware.
     pub fn packet_size(&self) -> usize {
-        let mut size = DmpPacketSize::HEADER;
+        // Base packet size: Header + Footer
+        let mut size = DmpPacketSize::HEADER + DmpPacketSize::FOOTER;
 
-        // Quaternion data (only one type can be active)
-        if self.quaternion_6axis
-            || self.quaternion_9axis
-            || self.game_rotation_vector
-            || self.geomag_rotation_vector
-        {
-            size += DmpPacketSize::QUATERNION;
+        let features = self.get_active_features();
+        let c1 = features.as_control1();
+        let c2 = features.as_control2();
+
+        // Count HEADER2 if specifically enabled in CTL1
+        if c1.contains(DmpControl1Flags::HEADER2) {
+            size += DmpPacketSize::HEADER2;
+
+            if c2.contains(DmpControl2Flags::ACCEL_ACCURACY) {
+                size += DmpPacketSize::ACCEL_ACCURACY;
+            }
+            if c2.contains(DmpControl2Flags::GYRO_ACCURACY) {
+                size += DmpPacketSize::GYRO_ACCURACY;
+            }
+            if c2.contains(DmpControl2Flags::COMPASS_ACCURACY) {
+                size += DmpPacketSize::COMPASS_ACCURACY;
+            }
         }
 
-        // Raw sensor data
-        if self.raw_accel {
-            size += DmpPacketSize::ACCEL_GYRO;
+        if c1.contains(DmpControl1Flags::ACCEL) {
+            size += DmpPacketSize::ACCEL_COMPASS;
         }
-
-        if self.raw_gyro {
-            size += DmpPacketSize::ACCEL_GYRO;
+        if c1.contains(DmpControl1Flags::GYRO) {
+            size += DmpPacketSize::RAW_GYRO;
         }
-
-        // Calibrated sensor data
-        if self.calibrated_accel {
-            size += DmpPacketSize::ACCEL_GYRO;
+        if c1.contains(DmpControl1Flags::COMPASS) {
+            size += DmpPacketSize::ACCEL_COMPASS;
         }
-
-        if self.calibrated_gyro {
-            size += DmpPacketSize::CAL_GYRO;
+        if c1.contains(DmpControl1Flags::QUAT6) {
+            size += DmpPacketSize::QUAT6;
         }
-
+        if c1.contains(DmpControl1Flags::QUAT9) || c1.contains(DmpControl1Flags::GEOMAG) {
+            size += DmpPacketSize::QUAT9;
+        }
+        // if c1.contains(DmpControl1Flags::CALIBRATED_GYRO) {
+        //     size += DmpPacketSize::CAL_GYRO;
+        // }
+        if c1.contains(DmpControl1Flags::CALIBRATED_COMPASS) {
+            size += DmpPacketSize::CAL_COMPASS;
+        }
+        if c1.contains(DmpControl1Flags::STEP_DETECTOR) {
+            size += DmpPacketSize::PEDOMETER;
+        }
+        if c1.contains(DmpControl1Flags::ALS) {
+            size += DmpPacketSize::ALS;
+        }
+        if c1.contains(DmpControl1Flags::PQUAT6) {
+            size += DmpPacketSize::PQUAT6;
+        }
+        if c1.contains(DmpControl1Flags::PRESSURE) {
+            size += DmpPacketSize::PRESSURE;
+        }
         size
     }
 
     /// Calculate DMP sample rate divider
     ///
     /// The DMP sample rate is derived from the gyroscope sample rate divided
-    /// by (1 + divider). For a gyro rate of 1125 Hz, the divider is:
+    /// by (1 + divider). For a gyro rate of 225 Hz, the divider is:
     ///
-    /// divider = (1125 / `desired_rate`) - 1
+    /// divider = (225 / `desired_rate`) - 1
     ///
     /// Returns the divider value to write to the DMP.
-    pub fn sample_rate_divider(&self) -> u16 {
-        const GYRO_RATE: u16 = 1125; // Hz
+    pub const fn sample_rate_divider(&self) -> u16 {
+        const GYRO_RATE: u16 = 225; // Hz
 
         if self.sample_rate == 0 || self.sample_rate > GYRO_RATE {
             return 0; // Invalid, default to maximum rate
@@ -744,10 +1104,13 @@ impl DmpConfig {
 /// Configuration sequence builder
 ///
 /// This struct helps build the sequence of register/memory writes needed
-/// to configure the DMP. Based on InvenSense reference implementation.
+/// to configure the DMP. Based on `InvenSense` reference implementation.
 pub struct ConfigSequence {
     /// Feature mask to enable
-    pub feature_mask: u16,
+    pub features: DmpFeatures,
+
+    /// Sample rate
+    pub sample_rate: DmpSampleRate,
 
     /// Sample rate divider
     pub rate_divider: u16,
@@ -756,19 +1119,18 @@ pub struct ConfigSequence {
     pub fifo_watermark: u16,
 
     /// Data output control 1 (what to output to FIFO)
-    pub data_out_ctl1: u16,
+    pub data_out_ctl1: DmpControl1Flags,
 
     /// Data output control 2 (accuracy bits)
-    pub data_out_ctl2: u16,
+    pub data_out_ctl2: DmpControl2Flags,
 
     /// Data ready status (which sensors trigger data ready)
-    pub data_rdy_status: u16,
+    pub data_rdy_status: DmpDataReadyStatus,
 
     /// Motion event control (calibration and fusion features)
-    pub motion_event_ctl: u16,
+    pub motion_event_ctl: DmpMotionEventControl,
 
     /// Cached byte arrays for dynamic values
-    feature_bytes: [u8; 2],
     data_out_ctl1_bytes: [u8; 2],
     rate_bytes: [u8; 2],
     data_out_ctl2_bytes: [u8; 2],
@@ -787,147 +1149,49 @@ impl ConfigSequence {
     ///
     /// The calibration parameters are automatically selected based on the sample rate.
     pub fn from_config(config: &DmpConfig) -> Self {
-        let feature_mask = config.to_feature_mask();
+        Self::from_config_and_pll(config, 0x09)
+    }
+
+    /// Create configuration sequence from `DmpConfig`
+    ///
+    /// The calibration parameters are automatically selected based on the sample rate.
+    /// - Uses `pll_correction` for optimal timing accuracy
+    /// - Reads correction value from Bank 1, register 0x28 (`TIMEBASE_CORSE_CORRECTION_PLL`)
+    pub fn from_config_and_pll(config: &DmpConfig, pll_correction: i8) -> Self {
+        let features = config.get_active_features();
+        // Calculate DATA_OUT_CTL1 - tells DMP what to output to FIFO
+        // Must include ACCEL (0x8000) and HEADER2 (0x0008) bits when those sensors are needed
+        let data_out_ctl1 = features.as_control1();
+        // Calculate DATA_OUT_CTL2 - tells DMP what to output to FIFO
+        let data_out_ctl2 = features.as_control2();
+        let data_rdy_status = features.as_data_ready();
+        let motion_event_ctl = features.as_motion_event();
+
         let rate_divider = config.sample_rate_divider();
         #[allow(clippy::cast_possible_truncation)]
         let fifo_watermark = config.packet_size() as u16;
 
-        // Calculate DATA_OUT_CTL1 - tells DMP what to output to FIFO
-        // Must include ACCEL (0x8000) and GYRO_CALIBR (0x0008) bits when those sensors are needed
-        let mut data_out_ctl1 = feature_mask;
-
-        // Add ACCEL bit (0x8000) if any feature needs accelerometer
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_accel
-            || config.calibrated_accel
-        {
-            data_out_ctl1 |= 0x8000; // ACCEL bit
-        }
-
-        // Add GYRO_CALIBR bit (0x0008) if any feature needs gyroscope
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_gyro
-            || config.calibrated_gyro
-        {
-            data_out_ctl1 |= 0x0008; // GYRO_CALIBR bit
-        }
-
-        // Calculate DATA_OUT_CTL2 (header2) bits based on enabled features
-        let mut data_out_ctl2 = 0u16;
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_accel
-            || config.calibrated_accel
-        {
-            data_out_ctl2 |= DmpDataOutputControl2::ACCEL_ACCURACY;
-        }
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_gyro
-            || config.calibrated_gyro
-        {
-            data_out_ctl2 |= DmpDataOutputControl2::GYRO_ACCURACY;
-        }
-        if config.quaternion_9axis
-            || config.geomag_rotation_vector
-            || config.raw_mag
-            || config.calibrated_mag
-        {
-            data_out_ctl2 |= DmpDataOutputControl2::COMPASS_ACCURACY;
-        }
-
-        // Calculate DATA_RDY_STATUS bits - which sensors should trigger data ready
-        let mut data_rdy_status = 0u16;
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_accel
-            || config.calibrated_accel
-        {
-            data_rdy_status |= DmpDataReadyStatus::ACCEL;
-        }
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_gyro
-            || config.calibrated_gyro
-        {
-            data_rdy_status |= DmpDataReadyStatus::GYRO;
-        }
-        if config.quaternion_9axis
-            || config.geomag_rotation_vector
-            || config.raw_mag
-            || config.calibrated_mag
-        {
-            data_rdy_status |= DmpDataReadyStatus::COMPASS;
-        }
-
-        // Calculate MOTION_EVENT_CTL bits - which calibration and fusion features to enable
-        let mut motion_event_ctl = 0u16;
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_accel
-            || config.calibrated_accel
-        {
-            motion_event_ctl |= DmpMotionEventControl::ACCEL_CALIBR;
-        }
-        if config.quaternion_6axis
-            || config.quaternion_9axis
-            || config.game_rotation_vector
-            || config.geomag_rotation_vector
-            || config.raw_gyro
-            || config.calibrated_gyro
-        {
-            motion_event_ctl |= DmpMotionEventControl::GYRO_CALIBR;
-        }
-        if config.quaternion_9axis
-            || config.geomag_rotation_vector
-            || config.raw_mag
-            || config.calibrated_mag
-        {
-            motion_event_ctl |= DmpMotionEventControl::COMPASS_CALIBR;
-        }
-        if config.quaternion_9axis {
-            motion_event_ctl |= DmpMotionEventControl::NINE_AXIS;
-        }
-        if config.geomag_rotation_vector {
-            motion_event_ctl |= DmpMotionEventControl::GEOMAG;
-        }
-
         // Calculate sample-rate-dependent parameters
         let sample_rate_config = DmpSampleRate::from_hz(config.sample_rate);
+
         // Use PLL=0x09 as default
         // For best accuracy, read from Bank 1, reg 0x28 (TIMEBASE_CORRECTION_PLL)
-        let gyro_sf = calculate_gyro_sf(sample_rate_config.gyro_sample_rate_div(), 0x09);
+        let gyro_sf = calculate_gyro_sf(sample_rate_config.gyro_sample_rate_div(), pll_correction);
 
         Self {
-            feature_mask,
+            features,
+            sample_rate: sample_rate_config,
             rate_divider,
             fifo_watermark,
             data_out_ctl1,
             data_out_ctl2,
             data_rdy_status,
             motion_event_ctl,
-            feature_bytes: feature_mask.to_be_bytes(),
-            data_out_ctl1_bytes: data_out_ctl1.to_be_bytes(),
+            data_out_ctl1_bytes: data_out_ctl1.bits().to_be_bytes(),
             rate_bytes: rate_divider.to_be_bytes(),
-            data_out_ctl2_bytes: data_out_ctl2.to_be_bytes(),
-            data_rdy_status_bytes: data_rdy_status.to_be_bytes(),
-            motion_event_ctl_bytes: motion_event_ctl.to_be_bytes(),
+            data_out_ctl2_bytes: data_out_ctl2.bits().to_be_bytes(),
+            data_rdy_status_bytes: data_rdy_status.bits().to_be_bytes(),
+            motion_event_ctl_bytes: motion_event_ctl.bits().to_be_bytes(),
             gyro_sf_bytes: gyro_sf.to_be_bytes(),
             accel_only_gain_bytes: sample_rate_config.accel_only_gain().to_be_bytes(),
             accel_alpha_var_bytes: sample_rate_config.accel_alpha_var().to_be_bytes(),
@@ -937,7 +1201,7 @@ impl ConfigSequence {
 
     /// Get all memory writes needed to fully configure the DMP
     ///
-    /// This returns the complete initialization sequence. Each entry is (address, data_bytes).
+    /// This returns the complete initialization sequence. Each entry is (address, `data_bytes`).
     ///
     /// Without these writes, the DMP will load and enable successfully but will not
     /// generate any data in the FIFO.
@@ -957,7 +1221,8 @@ impl ConfigSequence {
     /// - **Motion event control**: Enable calibration and fusion
     ///
     /// Total: 37 memory writes
-    pub fn get_init_sequence(&self) -> [InitWrite<'_>; 37] {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn get_init_sequence(&self) -> [InitWrite<'_>; 50] {
         [
             // Gyroscope Scaling Factor
             // Calculated from sample rate div and PLL correction (Bank 1, reg 0x28)
@@ -1028,17 +1293,39 @@ impl ConfigSequence {
                 DmpMemoryAddresses::DATA_RDY_STATUS,
                 &self.data_rdy_status_bytes,
             ),
-            // Sample rate divider
-            InitWrite::new(DmpMemoryAddresses::ODR_RATE, &self.rate_bytes),
-            // ODR Registers
-            // Output data rate for 9-axis quaternion (0 = use sensor rate)
-            InitWrite::new(DmpOdrRegisters::QUAT9, &[0x00, 0x00]),
-            // Reset ODR counter for 9-axis quaternion
+            // ODR Registers and Counters
+            // Output data rate for 9-axis quaternion
+            InitWrite::new(DmpOdrRegisters::QUAT9, &self.rate_bytes),
+            // Reset ODR counter for 9-axis quaternion to apply the new rate
             InitWrite::new(DmpOdrCounterRegisters::QUAT9, &[0x00, 0x00]),
-            // Set output data rate for accelerometer (0 = use sensor rate)
-            InitWrite::new(DmpOdrRegisters::ACCEL, &[0x00, 0x00]),
-            // Reset ODR counter for accelerometer
+            // Output data rate for 6-axis quaternion
+            InitWrite::new(DmpOdrRegisters::QUAT6, &self.rate_bytes),
+            // Reset ODR counter for 6-axis quaternion to apply the new rate
+            InitWrite::new(DmpOdrCounterRegisters::QUAT6, &[0x00, 0x00]),
+            // Output data rate for accelerometer
+            InitWrite::new(DmpOdrRegisters::ACCEL, &self.rate_bytes),
+            // Reset ODR counter for accelerometer to apply the new rate
             InitWrite::new(DmpOdrCounterRegisters::ACCEL, &[0x00, 0x00]),
+            // Output data rate for gyroscope
+            InitWrite::new(DmpOdrRegisters::GYRO, &self.rate_bytes),
+            // Reset ODR counter for gyroscope to apply the new rate
+            InitWrite::new(DmpOdrCounterRegisters::GYRO, &[0x00, 0x00]),
+            // Output data rate for compass (magnetometer)
+            InitWrite::new(DmpOdrRegisters::CPASS, &self.rate_bytes),
+            // Reset ODR counter for compass (magnetometer) to apply the new rate
+            InitWrite::new(DmpOdrCounterRegisters::CPASS, &[0x00, 0x00]),
+            // Output data rate for Calibrated Gyro
+            InitWrite::new(DmpOdrRegisters::GYRO_CALIBR, &self.rate_bytes),
+            InitWrite::new(DmpOdrCounterRegisters::GYRO_CALIBR, &[0x00, 0x00]),
+            // Output data rate for Calibrated Compass (Mag)
+            InitWrite::new(DmpOdrRegisters::CPASS_CALIBR, &self.rate_bytes),
+            InitWrite::new(DmpOdrCounterRegisters::CPASS_CALIBR, &[0x00, 0x00]),
+            // Output data rate for Geomagnetic Rotation Vector
+            InitWrite::new(DmpOdrRegisters::GEOMAG, &self.rate_bytes),
+            InitWrite::new(DmpOdrCounterRegisters::GEOMAG, &[0x00, 0x00]),
+            // Output data rate for Game Rotation Vector (PQUAT6)
+            InitWrite::new(DmpOdrRegisters::PQUAT6, &self.rate_bytes),
+            InitWrite::new(DmpOdrCounterRegisters::PQUAT6, &[0x00, 0x00]),
         ]
     }
 }
@@ -1107,17 +1394,16 @@ mod tests {
     #[test]
     fn test_feature_mask_6axis() {
         let config = DmpConfig::new().with_quaternion_6axis(true);
-        let mask = config.to_feature_mask();
-        // HEADER2 bit (0x0008) is automatically added for accuracy reporting
-        assert_eq!(mask, DmpFeatures::QUAT6 | DmpFeatures::HEADER2);
+        let features = config.get_active_features();
+        // HEADER2 bit is not part of DmpFeatures; it is added later in as_control1()
+        assert!(features.contains(DmpFeatures::QUATERNION_6AXIS));
     }
 
     #[test]
     fn test_feature_mask_9axis() {
         let config = DmpConfig::new().with_quaternion_9axis(true);
-        let mask = config.to_feature_mask();
-        // HEADER2 bit (0x0008) is automatically added for accuracy reporting
-        assert_eq!(mask, DmpFeatures::QUAT9 | DmpFeatures::HEADER2);
+        let features = config.get_active_features();
+        assert!(features.contains(DmpFeatures::QUATERNION_9AXIS));
     }
 
     #[test]
@@ -1125,18 +1411,19 @@ mod tests {
         let config = DmpConfig::new()
             .with_quaternion_6axis(true)
             .with_calibrated_gyro(true);
-        let mask = config.to_feature_mask();
-        assert!(mask & DmpFeatures::QUAT6 != 0);
-        assert!(mask & DmpFeatures::SEND_CAL_GYRO != 0);
-        assert!(mask & DmpFeatures::HEADER2 != 0);
-        // GYRO_CALIBRATION is 0x0000 - it's enabled via MOTION_EVENT_CTL, not feature mask
+        let features = config.get_active_features();
+        assert!(features.contains(DmpFeatures::QUATERNION_6AXIS));
+        assert!(features.contains(DmpFeatures::CALIBRATED_GYRO));
+        // GYRO_CALIBRATION is enabled via MOTION_EVENT_CTL, not feature mask
     }
 
     #[test]
     fn test_packet_size_quat_only() {
         let config = DmpConfig::new().with_quaternion_6axis(true);
         let size = config.packet_size();
-        assert_eq!(size, DmpPacketSize::HEADER + DmpPacketSize::QUATERNION);
+        // Header (2) + QUAT6 (12) + Footer (2) = 16
+        let expected = DmpPacketSize::HEADER + DmpPacketSize::QUAT6 + DmpPacketSize::FOOTER;
+        assert_eq!(size, expected);
     }
 
     #[test]
@@ -1147,9 +1434,10 @@ mod tests {
             .with_calibrated_gyro(true);
         let size = config.packet_size();
         let expected = DmpPacketSize::HEADER
-            + DmpPacketSize::QUATERNION
-            + DmpPacketSize::ACCEL_GYRO  // calibrated_accel
-            + DmpPacketSize::CAL_GYRO; // calibrated_gyro (12 bytes)
+            + DmpPacketSize::QUAT6
+            + DmpPacketSize::ACCEL_COMPASS  // raw accel (6 bytes) for calibrated_accel
+            + DmpPacketSize::CAL_GYRO
+            + DmpPacketSize::FOOTER;
         assert_eq!(size, expected);
     }
 
@@ -1157,23 +1445,22 @@ mod tests {
     fn test_sample_rate_divider_100hz() {
         let config = DmpConfig::new().with_sample_rate(100);
         let divider = config.sample_rate_divider();
-        // 1125 / 100 - 1 = 11.25 - 1 = 10.25 → 10
-        assert_eq!(divider, 10);
+        // 225 / 100 - 1 = 2 - 1 = 1 (integer division)
+        assert_eq!(divider, 1);
     }
 
     #[test]
     fn test_sample_rate_divider_225hz() {
         let config = DmpConfig::new().with_sample_rate(225);
         let divider = config.sample_rate_divider();
-        // 1125 / 225 - 1 = 5 - 1 = 4
-        assert_eq!(divider, 4);
+        assert_eq!(divider, 0);
     }
 
     #[test]
     fn test_sample_rate_divider_invalid() {
         let config = DmpConfig::new().with_sample_rate(0);
         let divider = config.sample_rate_divider();
-        assert_eq!(divider, 0); // Invalid rate returns 0
+        assert_eq!(divider, 0);
     }
 
     #[test]
@@ -1181,12 +1468,10 @@ mod tests {
         let config = DmpConfig::new()
             .with_quaternion_6axis(true)
             .with_sample_rate(100);
-
         let seq = ConfigSequence::from_config(&config);
 
-        // HEADER2 bit (0x0008) is automatically added for accuracy reporting
-        assert_eq!(seq.feature_mask, DmpFeatures::QUAT6 | DmpFeatures::HEADER2);
-        assert_eq!(seq.rate_divider, 10);
+        assert!(seq.features.contains(DmpFeatures::QUATERNION_6AXIS));
+        assert_eq!(seq.rate_divider, 1);
         assert!(seq.fifo_watermark > 0);
     }
 
@@ -1194,37 +1479,34 @@ mod tests {
     fn test_arbitrary_sample_rate_interpolate_75hz() {
         // Test interpolation for 75 Hz (between 56 and 112 Hz)
         let rate = ArbitrarySampleRate::interpolate(75).unwrap();
-
-        // 1100 / 75 ≈ 14.67, so div should be 13 or 14
+        // 1100 / 75 ≈ 14.67, so gyro_div should be 13 or 14
         assert!(rate.gyro_div == 13 || rate.gyro_div == 14);
 
         // Parameters should be between 56Hz and 112Hz values
-        assert!(rate.accel_only_gain > 0x01D1745D); // > 112Hz value
-        assert!(rate.accel_only_gain < 0x03A49249); // < 56Hz value
-
-        assert!(rate.accel_alpha_var > 0x34924925); // > 56Hz value
-        assert!(rate.accel_alpha_var < 0x3A492492); // < 112Hz value
+        assert!(rate.accel_only_gain > 0x01D1745D);
+        assert!(rate.accel_only_gain < 0x03A49249);
+        assert!(rate.accel_alpha_var > 0x34924925);
+        assert!(rate.accel_alpha_var < 0x3A492492);
     }
 
     #[test]
     fn test_arbitrary_sample_rate_interpolate_150hz() {
         // Test interpolation for 150 Hz (between 112 and 225 Hz)
         let rate = ArbitrarySampleRate::interpolate(150).unwrap();
-
-        // 1100 / 150 ≈ 7.33, so div should be 6 or 7
+        // 1100 / 150 ≈ 7.33, so gyro_div should be 6 or 7
         assert!(rate.gyro_div >= 6 && rate.gyro_div <= 7);
 
         // Parameters should be between 112Hz and 225Hz values
-        assert!(rate.accel_only_gain > 0x00E8BA2E); // > 225Hz value
-        assert!(rate.accel_only_gain < 0x01D1745D); // < 112Hz value
+        assert!(rate.accel_only_gain > 0x00E8BA2E);
+        assert!(rate.accel_only_gain < 0x01D1745D);
     }
 
     #[test]
     fn test_arbitrary_sample_rate_exact_match_returns_none() {
         // Exact matches should return None (use DmpSampleRate enum instead)
-        assert!(ArbitrarySampleRate::interpolate(55).is_none()); // 56Hz rounded
-        assert!(ArbitrarySampleRate::interpolate(110).is_none()); // 112Hz rounded
-        assert!(ArbitrarySampleRate::interpolate(220).is_none()); // 225Hz rounded
+        assert!(ArbitrarySampleRate::interpolate(56).is_none());
+        assert!(ArbitrarySampleRate::interpolate(112).is_none());
+        assert!(ArbitrarySampleRate::interpolate(225).is_none());
     }
 
     #[test]
@@ -1245,9 +1527,8 @@ mod tests {
 
         // Should extrapolate using 56-112 slope
         // Lower rates generally have larger calibration values
-        // The exact value depends on the extrapolation, so just verify it's reasonable
-        assert!(rate.accel_only_gain > 0); // Should have a valid value
-        assert!(rate.gyro_div > 19); // Should be larger divider for lower rate
+        assert!(rate.accel_only_gain > 0);
+        assert!(rate.gyro_div > 19); // Larger divider for lower rate
     }
 
     #[test]
@@ -1257,6 +1538,6 @@ mod tests {
 
         // Should extrapolate using 112-225 slope
         // Gyro div should be small for high rate
-        assert!(rate.gyro_div <= 3); // 1100 / 300 ≈ 3.67
+        assert!(rate.gyro_div <= 3); // 1100/300 ≈ 3.67
     }
 }

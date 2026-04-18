@@ -212,13 +212,12 @@ where
         // For SPI writes, MSB should be 0 (clear it just in case)
         let write_address = address & 0x7F;
 
-        // Create buffer with address + data
-        let mut buffer = [0u8; 33];
-        buffer[0] = write_address;
-        let len = write_data.len().min(32);
-        buffer[1..=len].copy_from_slice(&write_data[..len]);
+        let mut operations = [
+            embedded_hal::spi::Operation::Write(&[write_address]),
+            embedded_hal::spi::Operation::Write(write_data),
+        ];
 
-        self.spi.write(&buffer[..=len]).map_err(Error::Bus)
+        self.spi.transaction(&mut operations).map_err(Error::Bus)
     }
 }
 
@@ -261,12 +260,14 @@ where
         // For SPI writes, MSB should be 0 (clear it just in case)
         let write_address = address & 0x7F;
 
-        // Create buffer with address + data
-        let mut buffer = [0u8; 33];
-        buffer[0] = write_address;
-        let len = write_data.len().min(32);
-        buffer[1..=len].copy_from_slice(&write_data[..len]);
+        let mut operations = [
+            embedded_hal_async::spi::Operation::Write(&[write_address]),
+            embedded_hal_async::spi::Operation::Write(write_data),
+        ];
 
-        self.spi.write(&buffer[..=len]).await.map_err(Error::Bus)
+        self.spi
+            .transaction(&mut operations)
+            .await
+            .map_err(Error::Bus)
     }
 }

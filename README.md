@@ -39,7 +39,7 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 
 ### Data Management & Events
 - ✅ **Hardware Interrupts (INT1)** - Configurable push-pull/latch modes for Data Ready, FIFO Overflow, etc.
-- ✅ **Wake-on-Motion (WoM)** - Low power motion detection.
+- ✅ **Wake-on-Motion (`WoM`)** - Low power motion detection.
 - ✅ **FIFO management** - Batch reading with configurable watermarks for efficient data collection.
 - ✅ **Physical unit conversions** - Direct output in g, °/s, rad/s, °C, µT (or raw 16-bit values)
 - ✅ **Calibration support** - Offset calibration for accelerometer, gyroscope, and magnetometer with motion detection
@@ -53,7 +53,7 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 ### Known Limitations
 - ❌ **DMP (Digital Motion Processor)** - Not functional despite extensive attempts. Use software sensor fusion instead.
 
-## Usage
+## Usagejingg
 
 Add this to your `Cargo.toml`:
 
@@ -196,14 +196,14 @@ All tests run automatically on every push and pull request.
 **Advanced Features:**
 - [x] FIFO management (configuration, batch reading, parsing)
 - [x] Hardware Interrupts (INT1 push-pull/latch, Data Ready, Overflow)
-- [x] Wake-on-Motion (WoM) 
+- [x] Wake-on-Motion (`WoM`) 
 - [x] Power management (sleep, low-power, cycle modes)
 - [x] Hardware self-test (accelerometer, gyroscope, magnetometer with internal test signals)
 
 ### Known Non-Functional Features ❌
 **Digital Motion Processor (DMP):**
 - Firmware loading implementation exists (behind `dmp` feature flag)
-- **Status:** Not functional despite extensive tinkering
+- **Status:** Awaiting data verification; API not yet stable
 - **Recommendation:** Use software sensor fusion (see `ahrs_euler.rs` example) instead
 - DMP code remains in codebase for reference only
 

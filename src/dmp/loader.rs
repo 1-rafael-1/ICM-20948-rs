@@ -50,6 +50,10 @@ impl FirmwareLoader {
     /// Returns `Ok(())` if the firmware was loaded successfully, or an error if
     /// communication failed.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if any register write fails while streaming the firmware.
+    ///
     /// After this function returns, delay for at least 1ms before configuring or
     /// enabling the DMP.
     ///
@@ -116,6 +120,10 @@ impl FirmwareLoader {
     ///
     /// Returns `Ok(true)` if verification passed, `Ok(false)` if verification
     /// failed, or an error if communication failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any register write or read fails during verification.
     pub fn verify_firmware<E, W, R>(mut write_fn: W, mut read_fn: R) -> Result<bool, E>
     where
         W: FnMut(u8, u8) -> Result<(), E>,
@@ -189,6 +197,10 @@ impl FirmwareLoader {
     /// # Returns
     ///
     /// Returns `Ok(())` if successful, or an error if communication failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any register write fails while setting the start address.
     pub fn set_start_address<E, F>(mut write_fn: F, start_addr: u16) -> Result<(), E>
     where
         F: FnMut(u8, u8) -> Result<(), E>,

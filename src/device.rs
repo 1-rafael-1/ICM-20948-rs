@@ -16,14 +16,8 @@ const DEFAULT_MOTION_DETECTION_THRESHOLD_DIVISOR: i16 = 20;
 
 use crate::fifo::{FifoConfig, FifoConfigAdvanced, FifoOverflowStatus, FifoRecord};
 
-// Only import RegisterInterface when not using async feature
-#[cfg(not(feature = "async"))]
-use device_driver::RegisterInterface;
-
 // Interrupt imports - needed in both blocking and async modes
-use crate::interrupt::{
-    DataReadyStatus, InterruptConfig, InterruptPinConfig, InterruptStatus, WomStatus,
-};
+use crate::interrupt::{DataReadyStatus, InterruptConfig, InterruptPinConfig, InterruptStatus};
 
 // Power management imports - needed in both blocking and async modes
 use crate::power::{
@@ -78,12 +72,15 @@ pub struct Icm20948Driver<I> {
     gyro_calibration: crate::sensors::GyroCalibration,
     mag_calibration: crate::sensors::MagCalibration,
     mag_initialized: bool,
+
+    #[cfg(feature = "dmp")]
+    dmp_packet_size: usize,
 }
 
 #[cfg(not(feature = "async"))]
 impl<I> Icm20948Driver<I>
 where
-    I: RegisterInterface<AddressType = u8>,
+    I: device_driver::RegisterInterface<AddressType = u8>,
 {
     /// Create a new ICM-20948 driver instance
     ///
@@ -106,6 +103,9 @@ where
             gyro_calibration: crate::sensors::GyroCalibration::default(),
             mag_calibration: crate::sensors::MagCalibration::default(),
             mag_initialized: false,
+
+            #[cfg(feature = "dmp")]
+            dmp_packet_size: 0,
         };
 
         // Verify WHO_AM_I
@@ -466,7 +466,7 @@ where
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dmp_load_firmware(&mut self) -> Result<(), Error<I::Error>> {
-        use crate::dmp::firmware::{DMP_FIRMWARE, DMP_START_ADDRESS};
+        use crate::dmp::firmware::{DMP_LOAD_START, DMP_START_ADDRESS, FirmwareReader};
 
         // Ensure we're in Bank 0
         const WRITE_CHUNK_SIZE: usize = 16;
@@ -474,9 +474,16 @@ where
 
         self.select_bank(Bank::Bank0)?;
 
-        let mut current_address: u16 = 0;
+        let mut current_address: u16 = DMP_LOAD_START;
+        let mut chunk = [0u8; WRITE_CHUNK_SIZE];
+        let mut reader = FirmwareReader::new();
 
-        for chunk in DMP_FIRMWARE.chunks(WRITE_CHUNK_SIZE) {
+        loop {
+            let bytes_read = reader.read(&mut chunk);
+            if bytes_read == 0 {
+                break;
+            }
+
             // Calculate which bank and address offset we're at
             #[allow(clippy::cast_possible_truncation)]
             let bank = (current_address / DMP_BANK_SIZE as u16) as u8;
@@ -495,15 +502,16 @@ where
 
             // Write the data bytes sequentially to MEM_R_W
             // The address auto-increments after each write
-            for &byte in chunk {
-                self.device.mem_rw().write(|w| {
-                    w.set_mem_r_w(byte);
-                })?;
-            }
+            // for byte in chunk {
+            //     self.device.mem_rw().write(|w| {
+            //         w.set_mem_r_w(byte);
+            //     })?;
+            // }
+            self.device
+                .interface
+                .write_register(0x7D, 8, &chunk[..bytes_read])?;
 
-            #[allow(clippy::cast_possible_truncation)]
-            let chunk_len = chunk.len() as u16;
-            current_address += chunk_len;
+            current_address += bytes_read as u16;
         }
 
         // Switch to Bank 2 to set program start address
@@ -632,11 +640,8 @@ where
         })?;
 
         // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
-        self.device.bank_2_accel_smplrt_div_1().write(|w| {
-            w.set_accel_smplrt_div_1(0);
-        })?;
-        self.device.bank_2_accel_smplrt_div_2().write(|w| {
-            w.set_accel_smplrt_div_2(0);
+        self.device.bank_2_accel_smplrt_div().write(|w| {
+            w.set_accel_smplrt_div(0);
         })?;
 
         // Enable ODR_ALIGN_EN to synchronize sensor data streams
@@ -718,7 +723,7 @@ where
     /// // Now DMP is running and writing data to FIFO
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
+    pub async fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
         // If enabling, verify power management settings first
@@ -735,14 +740,18 @@ where
                 })?;
             }
 
+            // Note: Accelerometer and gyroscope must NOT be in cycle mode for DMP
             let lp_config = self.device.lp_config().read()?;
-            if lp_config.accel_cycle() || lp_config.gyro_cycle() {
+            if lp_config.accel_cycle() || lp_config.gyro_cycle() || !lp_config.i_2_c_mst_cycle() {
                 #[cfg(feature = "defmt")]
-                defmt::warn!("DMP Enable: Forcing accel/gyro cycle modes OFF (were enabled)");
+                defmt::warn!(
+                    "DMP Enable: Forcing accel/gyro cycle modes OFF (were enabled), I2C Mst cycle ON"
+                );
 
-                self.device.lp_config().modify(|w| {
+                self.device.lp_config().write(|w| {
                     w.set_accel_cycle(false);
                     w.set_gyro_cycle(false);
+                    w.set_i_2_c_mst_cycle(true);
                 })?;
             }
 
@@ -769,183 +778,22 @@ where
             }
         }
 
-        // Enable/disable DMP, FIFO, and I2C master
-        // Note: I2C master is only enabled if magnetometer has been initialized (9-axis mode)
+        // Turn off what goes into the FIFO through FIFO_EN_1, FIFO_EN_2
+        // Stop the accelerometer, gyro and temperature data from being written to the FIFO by writing zero to FIFO_EN_2
+        if enable {
+            self.device.fifo_en_1().write_with_zero(|_| {})?;
+            self.device.fifo_en_2().write_with_zero(|_| {})?;
+        }
+
+        // Enable/disable DMP, FIFO, and I2C master together
+        // FIFO_EN is needed for internal sensor→DMP routing
+        // I2C master is needed ONLY for magnetometer data (9-axis mode)
         self.device.user_ctrl().modify(|w| {
             w.set_dmp_en(enable);
             w.set_fifo_en(enable);
             // Only enable I2C master if magnetometer is initialized (9-axis mode)
             w.set_i_2_c_mst_en(enable && self.mag_initialized);
         })?;
-
-        // Enable sensor data routing to DMP internal data path via FIFO_EN_2
-        // This is required for the DMP to receive sensor data
-        if enable {
-            self.device.fifo_en_2().write(|w| {
-                w.set_gyro_x_fifo_en(true);
-                w.set_gyro_y_fifo_en(true);
-                w.set_gyro_z_fifo_en(true);
-                w.set_accel_fifo_en(true);
-            })?;
-        } else {
-            self.device.fifo_en_2().write(|w| {
-                w.set_gyro_x_fifo_en(false);
-                w.set_gyro_y_fifo_en(false);
-                w.set_gyro_z_fifo_en(false);
-                w.set_accel_fifo_en(false);
-            })?;
-        }
-
-        // Enable I2C master cycle mode for magnetometer data collection
-        // Note: Accelerometer and gyroscope must NOT be in cycle mode for DMP
-        if enable {
-            // Enable I2C master cycle mode (LP_CONFIG = 0x40)
-            self.device.lp_config().modify(|w| {
-                w.set_i_2_c_mst_cycle(true);
-            })?;
-
-            // Enable DMP interrupt - this may be required to start data flow
-            self.device.int_enable().modify(|w| {
-                w.set_dmp_int_1_en(true);
-            })?;
-        } else {
-            // Disable DMP interrupt when disabling DMP
-            self.device.int_enable().modify(|w| {
-                w.set_dmp_int_1_en(false);
-            })?;
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Enable sensor fusion for DMP processing
-    ///
-    /// Configures the DMP to perform 9-axis sensor fusion by writing the appropriate
-    /// control registers. This must be called **after** `dmp_enable()` because the DMP
-    /// firmware initializes these registers on startup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Enable DMP first
-    /// driver.dmp_enable(true)?;
-    ///
-    /// // THEN tell it which sensors to use
-    /// driver.dmp_enable_sensor_fusion()?;
-    /// ```
-    pub fn dmp_enable_sensor_fusion(&mut self) -> Result<(), Error<I::Error>> {
-        use crate::dmp::config::DmpMemoryAddresses;
-
-        // Calculate DATA_OUT_CTL1 value for 9-axis quaternion
-        // GYRO_CALIBR (0x0008) + QUAT9 (0x0400) + ACCEL (0x8000) = 0x8408
-        let data_out_ctl1: u16 = 0x8408;
-
-        // Calculate DATA_INTR_CTL - must match DATA_OUT_CTL1!
-        let data_intr_ctl: u16 = 0x8408;
-
-        // Calculate DATA_OUT_CTL2 (accuracy bits)
-        // ACCEL_ACCURACY (0x0001) + GYRO_ACCURACY (0x0002) + COMPASS_ACCURACY (0x0004) = 0x0007
-        let data_out_ctl2: u16 = 0x0007;
-
-        // Calculate MOTION_EVENT_CTL
-        // ACCEL_CALIBR (0x0001) + GYRO_CALIBR (0x0002) + COMPASS_CALIBR (0x0004) + 9AXIS (0x0100) = 0x0107
-        let motion_event_ctl: u16 = 0x0107;
-
-        // Calculate DATA_RDY_STATUS
-        // GYRO (0x0001) + ACCEL (0x0002) + COMPASS (0x0008) = 0x000B
-        let data_rdy_status: u16 = 0x000B;
-
-        // Write DATA_OUT_CTL1
-        self.write_dmp_memory(
-            DmpMemoryAddresses::DATA_OUT_CTL1,
-            &data_out_ctl1.to_be_bytes(),
-        )?;
-
-        // Write DATA_OUT_CTL2
-        self.write_dmp_memory(
-            DmpMemoryAddresses::DATA_OUT_CTL2,
-            &data_out_ctl2.to_be_bytes(),
-        )?;
-
-        // Write DATA_INTR_CTL (MUST match DATA_OUT_CTL1!)
-        self.write_dmp_memory(
-            DmpMemoryAddresses::DATA_INTR_CTL,
-            &data_intr_ctl.to_be_bytes(),
-        )?;
-
-        // Write MOTION_EVENT_CTL
-        self.write_dmp_memory(
-            DmpMemoryAddresses::MOTION_EVENT_CTL,
-            &motion_event_ctl.to_be_bytes(),
-        )?;
-
-        // Write DATA_RDY_STATUS
-        self.write_dmp_memory(
-            DmpMemoryAddresses::DATA_RDY_STATUS,
-            &data_rdy_status.to_be_bytes(),
-        )?;
-
-        // Small delay for DMP to process
-        for _ in 0..10000 {
-            core::hint::spin_loop();
-        }
-
-        // Verify DATA_RDY_STATUS
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory(DmpMemoryAddresses::DATA_RDY_STATUS, &mut readback)?;
-        let _status = ((readback[0] as u16) << 8) | (readback[1] as u16);
-
-        Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Enable sensor data routing to DMP internal data path
-    ///
-    /// Configures the FIFO_EN_2 register to route accelerometer and gyroscope data
-    /// to the DMP processor. This is required for DMP operation.
-    ///
-    /// Note: The magnetometer uses a separate I2C slave data path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use icm20948::*;
-    /// # let mut imu = Icm20948Driver::new_i2c(todo!(), Address::Primary).unwrap();
-    /// // After enabling DMP, enable sensor routing
-    /// imu.dmp_enable(true)?;
-    /// imu.dmp_enable_sensor_routing()?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn dmp_enable_sensor_routing(&mut self) -> Result<(), Error<I::Error>> {
-        self.select_bank(Bank::Bank0)?;
-
-        // Enable accel and gyro to internal data bus (shared by FIFO and DMP)
-        // This is required for DMP to receive sensor samples
-        self.device.fifo_en_2().modify(|w| {
-            w.set_accel_fifo_en(true);
-            w.set_gyro_x_fifo_en(true);
-            w.set_gyro_y_fifo_en(true);
-            w.set_gyro_z_fifo_en(true);
-        })?;
-
-        // Reset FIFO to clear any stale data and reinitialize the data path
-        self.device.fifo_rst().write(|w| {
-            w.set_fifo_reset(0x1F); // Reset all FIFOs
-        })?;
-
-        // Small delay to allow FIFO reset to complete
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
 
         Ok(())
     }
@@ -999,13 +847,8 @@ where
     pub fn read_fifo_count(&mut self) -> Result<u16, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
-        let count_h = self.device.fifo_counth().read()?;
-        let count_l = self.device.fifo_countl().read()?;
-
-        // Combine high (bits 12:8) and low (bits 7:0) bytes
-        let count = (u16::from(count_h.fifo_cnt_h()) << 8) | u16::from(count_l.fifo_cnt_l());
-
-        Ok(count)
+        let count = self.device.fifo_count().read()?;
+        Ok(count.count())
     }
 
     #[cfg(feature = "dmp")]
@@ -1201,65 +1044,65 @@ where
     /// ```
     pub fn dmp_configure(&mut self, config: &crate::dmp::DmpConfig) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
+        // NOTE: We do NOT disable I2C master during config for 9-axis mode
+        // The DMP needs continuous magnetometer data to run 9-axis fusion
+        // Disabling I2C master causes the DMP to stop producing output
+
+        let pll_correction = self.device.bank_1_timebase_correction_pll().read()?;
+
+        // Create configuration sequence
+        let seq =
+            ConfigSequence::from_config_and_pll(config, pll_correction.timebase_correction_pll());
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "DMP configure:pll_correction={}, feature_mask=0x{:04X}, data_out_ctl2=0x{:04X}, data_rdy_status=0x{:04X}, motion_event_ctl=0x{:04X}",
+            pll_correction.timebase_correction_pll(),
+            seq.features,
+            seq.data_out_ctl2,
+            seq.data_rdy_status,
+            seq.motion_event_ctl
+        );
+
+        // Ensure we're in Bank 0
+        self.select_bank(Bank::Bank2)?;
+
+        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+        self.device.bank_2_gyro_config_1().modify(|w| {
+            w.set_gyro_fchoice(true);
+            w.set_gyro_fs_sel(0b11); // 2000dps
+        })?;
+
+        // Set gyroscope sample rate divider
+        self.device.bank_2_gyro_smplrt_div().write(|w| {
+            w.set_gyro_smplrt_div(seq.sample_rate.gyro_sample_rate_div());
+        })?;
+
+        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+
+        self.device.bank_2_accel_config().modify(|w| {
+            w.set_accel_fchoice(true);
+            w.set_accel_fs_sel(0b01); // ±4g
+        })?;
+
+        // Set accelerometer sample rate divider
+        self.device.bank_2_accel_smplrt_div().write(|w| {
+            w.set_accel_smplrt_div(seq.sample_rate.accel_sample_rate_div());
+        })?;
 
         // Ensure we're in Bank 0
         self.select_bank(Bank::Bank0)?;
 
-        // Temporarily disable I2C master during DMP configuration to prevent
-        // write conflicts between magnetometer data and DMP memory registers
-        let lp_cfg = self.device.lp_config().read()?;
-        let i2c_mst_cycle_was_enabled = lp_cfg.i_2_c_mst_cycle();
-
-        let user_ctrl = self.device.user_ctrl().read()?;
-        let i2c_mst_was_enabled = user_ctrl.i_2_c_mst_en();
-
-        if i2c_mst_cycle_was_enabled || i2c_mst_was_enabled {
-            // Disable I2C master cycle mode first
-            if i2c_mst_cycle_was_enabled {
-                self.device.lp_config().modify(|w| {
-                    w.set_i_2_c_mst_cycle(false);
-                })?;
-            }
-
-            // Disable I2C master itself
-            if i2c_mst_was_enabled {
-                self.device.user_ctrl().modify(|w| {
-                    w.set_i_2_c_mst_en(false);
-                })?;
-            }
-
-            // Brief delay to ensure I2C master is fully stopped
-            for _ in 0..5000 {
-                core::hint::spin_loop();
-            }
-        }
-
-        // Create configuration sequence
-        let seq = ConfigSequence::from_config(config);
-
-        // Get the complete initialization sequence (36 writes)
+        // Get the complete initialization sequence
         let init_sequence = seq.get_init_sequence();
 
         // Write all configuration registers in one pass
         // This includes DATA_INTR_CTL (0x004C) and MOTION_EVENT_CTL (0x004E)
-
         for write in &init_sequence {
             self.write_dmp_memory(write.address, write.data)?;
         }
 
-        // Write DATA_RDY_STATUS to indicate which sensors are available to the DMP
-        // This must be written before DMP is enabled
-        // Bits: 0x0001=Gyro, 0x0002=Accel, 0x0008=Compass
-        let data_rdy_status: u16 = 0x000B; // Gyro + Accel + Compass
-
-        self.write_dmp_memory(0x008A, &data_rdy_status.to_be_bytes())?;
-
-        // Verify the write
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory(0x008A, &mut readback)?;
-        let _status = ((readback[0] as u16) << 8) | (readback[1] as u16);
-
-        // I2C master will be re-enabled by dmp_enable() after DMP starts
+        self.dmp_packet_size = config.packet_size();
 
         Ok(())
     }
@@ -1311,12 +1154,13 @@ where
             let chunk_size = remaining.min(MAX_CHUNK_SIZE);
 
             // Write chunk bytes (address auto-increments)
-            for i in 0..chunk_size {
-                let byte = data[bytes_written + i];
-                self.device.mem_rw().write(|w| {
-                    w.set_mem_r_w(byte);
-                })?;
-            }
+            // for i in 0..chunk_size {
+            //     let byte = data[bytes_written + i];
+            //     self.device.mem_rw().write(|w| {
+            //         w.set_mem_r_w(byte);
+            //     })?;
+            // }
+            self.device.interface.write_register(0x7D, 8, data)?;
 
             #[cfg(feature = "defmt")]
             {
@@ -1375,27 +1219,64 @@ where
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    #[cfg(feature = "dmp")]
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
+        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
 
         // Check FIFO count
         let count = self.read_fifo_count()?;
 
-        // Need at least a header (2 bytes)
+        // Need at least a primary header (2 bytes)
         if count < 2 {
             return Ok(None);
         }
 
-        // Read enough data for typical packet (header + quaternion)
-        // Maximum packet size is ~40 bytes for full configuration
-        let mut buffer = [0u8; 64];
-        let bytes_to_read = core::cmp::min(count as usize, buffer.len());
+        let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
+        self.read_fifo_raw(&mut packet_buf[0..self.dmp_packet_size])?;
 
-        self.read_fifo_raw(&mut buffer[..bytes_to_read])?;
+        #[cfg(feature = "defmt")]
+        if self.dmp_packet_size > 2 {
+            let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
+            defmt::debug!(
+                "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
+                header,
+                (header & DmpPacketHeader::QUAT6_BIT) != 0,
+                (header & DmpPacketHeader::QUAT9_BIT) != 0,
+                (header & DmpPacketHeader::ACCEL_BIT) != 0,
+                (header & DmpPacketHeader::GYRO_BIT) != 0,
+                (header & DmpPacketHeader::GYRO_CAL_BIT) != 0,
+                (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
+            );
 
-        // Parse the packet
+            // Show first 8 bytes after header if we have enough payload
+            if self.dmp_packet_size >= 10 {
+                defmt::debug!(
+                    "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    packet_buf[2],
+                    packet_buf[3],
+                    packet_buf[4],
+                    packet_buf[5],
+                    packet_buf[6],
+                    packet_buf[7],
+                    packet_buf[8],
+                    packet_buf[9]
+                );
+            }
+        }
+
         let parser = DmpParser::new();
-        Ok(parser.parse_packet(&buffer[..bytes_to_read]))
+        if let Some((mut data, _consumed)) =
+            parser.parse_packet(&packet_buf[..self.dmp_packet_size])
+        {
+            if let Some(raw) = data.raw_accel {
+                let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
+                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+            }
+            return Ok(Some(data));
+        } else {
+            return Ok(None);
+        }
     }
 
     #[cfg(feature = "dmp")]
@@ -1433,9 +1314,6 @@ where
                 return Ok(Some(quat));
             }
             if let Some(quat) = data.quaternion_6axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.game_rotation_vector {
                 return Ok(Some(quat));
             }
             if let Some(quat) = data.geomag_rotation_vector {
@@ -1482,10 +1360,11 @@ where
         })?;
 
         // Read data bytes
-        for byte in buffer.iter_mut() {
-            let reg = self.device.mem_rw().read()?;
-            *byte = reg.mem_r_w();
-        }
+        // for byte in buffer.iter_mut() {
+        //     let reg = self.device.mem_rw().read()?;
+        //     *byte = reg.mem_r_w();
+        // }
+        self.device.interface.read_register(0x7D, 8, buffer)?;
 
         Ok(())
     }
@@ -1638,17 +1517,16 @@ where
 
     /// Read Bank 2 accel configuration registers
     ///
-    /// Returns (`ACCEL_CONFIG`, `ACCEL_SMPLRT_DIV_1`, `ACCEL_SMPLRT_DIV_2`) as raw bytes
+    /// Returns (`ACCEL_CONFIG`, `ACCEL_SMPLRT_DIV`) as raw bytes
     ///
     /// # Errors
     ///
     /// Returns an error if communication with the device fails.
-    pub fn read_bank2_accel_config(&mut self) -> Result<(u8, u8, u8), Error<I::Error>> {
+    pub fn read_bank2_accel_config(&mut self) -> Result<(u8, u16), Error<I::Error>> {
         self.select_bank(Bank::Bank2)?;
 
         let config_reg = self.device.bank_2_accel_config().read()?;
-        let div1_reg = self.device.bank_2_accel_smplrt_div_1().read()?;
-        let div2_reg = self.device.bank_2_accel_smplrt_div_2().read()?;
+        let div_reg = self.device.bank_2_accel_smplrt_div().read()?;
 
         // Reconstruct raw bytes
         let mut config = 0u8;
@@ -1658,11 +1536,10 @@ where
         config |= config_reg.accel_fs_sel() << 1;
         config |= config_reg.accel_dlpfcfg() << 3;
 
-        let div1 = div1_reg.accel_smplrt_div_1();
-        let div2 = div2_reg.accel_smplrt_div_2();
+        let div = div_reg.accel_smplrt_div();
 
         self.select_bank(Bank::Bank0)?;
-        Ok((config, div1, div2))
+        Ok((config, div))
     }
 
     /// Read Bank 2 `ODR_ALIGN_EN` register
@@ -1751,6 +1628,10 @@ where
             DmpOdrRegisters::CPASS => DmpOdrCounterRegisters::CPASS,
             DmpOdrRegisters::GYRO_CALIBR => DmpOdrCounterRegisters::GYRO_CALIBR,
             DmpOdrRegisters::CPASS_CALIBR => DmpOdrCounterRegisters::CPASS_CALIBR,
+            DmpOdrRegisters::ALS => DmpOdrCounterRegisters::ALS,
+            DmpOdrRegisters::PQUAT6 => DmpOdrCounterRegisters::PQUAT6,
+            DmpOdrRegisters::GEOMAG => DmpOdrCounterRegisters::GEOMAG,
+            DmpOdrRegisters::PRESSURE => DmpOdrCounterRegisters::PRESSURE,
             _ => return Err(Error::InvalidConfig), // Unknown ODR register
         };
 
@@ -1794,7 +1675,7 @@ where
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::{DmpDataReadyStatus, DmpMemoryAddresses};
 
-        let mut status = 0u16;
+        let mut status = DmpDataReadyStatus::empty();
 
         if gyro {
             status |= DmpDataReadyStatus::GYRO;
@@ -1815,7 +1696,7 @@ where
             status
         );
 
-        let status_bytes = status.to_be_bytes();
+        let status_bytes = status.bits().to_be_bytes();
         self.write_dmp_memory(DmpMemoryAddresses::DATA_RDY_STATUS, &status_bytes)?;
 
         Ok(())
@@ -1850,10 +1731,12 @@ where
         gyro_calibr: bool,
         compass_calibr: bool,
         nine_axis: bool,
+        geomag: bool,
+        pedometer_interrupt: bool,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::{DmpMemoryAddresses, DmpMotionEventControl};
 
-        let mut control = 0u16;
+        let mut control = DmpMotionEventControl::empty();
 
         if accel_calibr {
             control |= DmpMotionEventControl::ACCEL_CALIBR;
@@ -1867,150 +1750,27 @@ where
         if nine_axis {
             control |= DmpMotionEventControl::NINE_AXIS;
         }
+        if geomag {
+            control |= DmpMotionEventControl::GEOMAG;
+        }
+        if pedometer_interrupt {
+            control |= DmpMotionEventControl::PEDOMETER_INTERRUPT;
+        }
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            "Setting MOTION_EVENT_CTL: accel_cal={} gyro_cal={} compass_cal={} 9axis={} -> 0x{:04X}",
+            "Setting MOTION_EVENT_CTL: accel_cal={} gyro_cal={} compass_cal={} 9axis={} geomag={} ped_int={} -> 0x{:04X}",
             accel_calibr,
             gyro_calibr,
             compass_calibr,
             nine_axis,
+            geomag,
+            pedometer_interrupt,
             control
         );
 
-        let control_bytes = control.to_be_bytes();
+        let control_bytes = control.bits().to_be_bytes();
         self.write_dmp_memory(DmpMemoryAddresses::MOTION_EVENT_CTL, &control_bytes)?;
-
-        Ok(())
-    }
-
-    /// Configure DMP to receive sensor data
-    ///
-    /// Performs the complete sensor initialization sequence required for DMP operation.
-    /// This must be called after enabling the DMP with `dmp_enable(true)`.
-    ///
-    /// # Arguments
-    ///
-    /// * `enable_magnetometer` - Whether to include magnetometer for 9-axis fusion
-    ///
-    /// This function:
-    /// 1. Sets output data rates (ODR) for all enabled sensors
-    /// 2. Configures DMP to accept data from the specified sensors
-    /// 3. Enables sensor calibration and fusion algorithms
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Load firmware and configure DMP
-    /// imu.dmp_init()?;
-    /// imu.dmp_configure(&config)?;
-    /// imu.dmp_enable(true)?;
-    ///
-    /// // Now enable sensors for DMP operation
-    /// imu.dmp_configure_sensors(true)?;  // Enable 9-axis with magnetometer
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any DMP memory write fails.
-    #[cfg(feature = "dmp")]
-    pub fn dmp_configure_sensors(
-        &mut self,
-        enable_magnetometer: bool,
-    ) -> Result<(), Error<I::Error>> {
-        use crate::dmp::config::{DmpMemoryAddresses, DmpOdrRegisters};
-
-        #[cfg(feature = "defmt")]
-        defmt::info!(
-            "Configuring DMP sensors (magnetometer: {})",
-            enable_magnetometer
-        );
-
-        // Ensure chip is awake and not in low power mode
-        self.select_bank(Bank::Bank0)?;
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_sleep(false);
-        })?;
-
-        // Exit low power mode before writing DMP registers
-        self.device.lp_config().modify(|w| {
-            w.set_i_2_c_mst_cycle(false);
-            w.set_accel_cycle(false);
-            w.set_gyro_cycle(false);
-        })?;
-
-        // Small delay after power mode change
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
-
-        // Step 1: Set ODR for raw sensors (0 = use sensor sample rate)
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Setting ODR for accelerometer");
-        self.dmp_set_odr(DmpOdrRegisters::ACCEL, 0)?;
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Setting ODR for gyroscope");
-        self.dmp_set_odr(DmpOdrRegisters::GYRO, 0)?;
-
-        if enable_magnetometer {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for compass/magnetometer");
-            self.dmp_set_odr(DmpOdrRegisters::CPASS, 0)?;
-        }
-
-        // Step 2: Set ODR for quaternion output
-        let quat_odr = if enable_magnetometer {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for 9-axis quaternion");
-            DmpOdrRegisters::QUAT9
-        } else {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for 6-axis quaternion");
-            DmpOdrRegisters::QUAT6
-        };
-        self.dmp_set_odr(quat_odr, 0)?;
-
-        // Step 3: Enable sensors (tell DMP which sensors to expect)
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Enabling sensor inputs for DMP");
-        self.dmp_enable_sensors(true, true, enable_magnetometer)?;
-
-        // Verify DATA_RDY_STATUS write
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory(DmpMemoryAddresses::DATA_RDY_STATUS, &mut readback)?;
-        let status = u16::from_be_bytes(readback);
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!(
-            "DATA_RDY_STATUS verification: wrote=0x000B read=0x{:04X}",
-            status
-        );
-
-        // Step 4: Enable calibration and fusion
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Configuring motion event control (calibration and fusion)");
-        self.dmp_set_motion_event_control(
-            true,                // accel_calibr
-            true,                // gyro_calibr
-            enable_magnetometer, // compass_calibr
-            enable_magnetometer, // nine_axis (only if magnetometer enabled)
-        )?;
-
-        // Verify MOTION_EVENT_CTL write
-        self.read_dmp_memory(DmpMemoryAddresses::MOTION_EVENT_CTL, &mut readback)?;
-        let _motion_ctl = u16::from_be_bytes(readback);
-
-        // Re-enable low power mode after writing DMP registers
-        // This is required for DMP to properly process sensor data
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_lp_en(true);
-        })?;
-
-        // Re-enable I2C master cycle mode
-        self.device.lp_config().modify(|w| {
-            w.set_i_2_c_mst_cycle(true);
-        })?;
 
         Ok(())
     }
@@ -2117,14 +1877,8 @@ where
     pub fn fifo_count(&mut self) -> Result<u16, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
-        let count_h = self.device.fifo_counth().read()?;
-        let count_l = self.device.fifo_countl().read()?;
-
-        // Mask upper 3 bits of FIFO_COUNTH - datasheet specifies FIFO_CNT[12:8] only
-        let count_h_masked = count_h.fifo_cnt_h() & 0x1F;
-        let count = u16::from_be_bytes([count_h_masked, count_l.fifo_cnt_l()]);
-
-        Ok(count)
+        let count = self.device.fifo_count().read()?;
+        Ok(count.count())
     }
 
     /// Read raw data from FIFO
@@ -2240,36 +1994,26 @@ where
         self.select_bank(Bank::Bank0)?;
 
         // INT_ENABLE register
-        self.device.int_enable().write(|w| {
+        self.device.int_enable_group().write(|w| {
             w.set_wom_int_en(config.wake_on_motion);
             w.set_dmp_int_1_en(config.dmp);
             w.set_i_2_c_mst_int_en(config.i2c_master);
             w.set_pll_rdy_en(config.pll_ready);
-        })?;
 
-        // INT_ENABLE_1 register
-        self.device.int_enable_1().write(|w| {
             w.set_raw_data_0_rdy_en(config.raw_data_ready);
-        })?;
 
-        // INT_ENABLE_2 register (FIFO overflow)
-        self.device.int_enable_2().write(|w| {
             if config.fifo_overflow {
                 w.set_fifo_overflow_en(0x1F); // Enable all FIFOs
             } else {
                 w.set_fifo_overflow_en(0);
             }
-        })?;
 
-        // INT_ENABLE_3 register (FIFO watermark)
-        self.device.int_enable_3().write(|w| {
             if config.fifo_watermark {
                 w.set_fifo_wm_en(0x1F); // Enable all FIFOs
             } else {
                 w.set_fifo_wm_en(0);
             }
         })?;
-
         Ok(())
     }
 
@@ -2283,15 +2027,12 @@ where
     pub fn read_interrupt_status(&mut self) -> Result<InterruptStatus, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
-        let status = self.device.int_status().read()?;
-        let status1 = self.device.int_status_1().read()?;
-        let status2 = self.device.int_status_2().read()?;
-        let status3 = self.device.int_status_3().read()?;
+        let status = self.device.int_status_group().read()?;
 
         Ok(InterruptStatus {
-            raw_data_ready: status1.raw_data_0_rdy_int(),
-            fifo_overflow: status2.fifo_overflow_int() != 0,
-            fifo_watermark: status3.fifo_wm_int() != 0,
+            raw_data_ready: status.raw_data_0_rdy_int(),
+            fifo_overflow: status.fifo_overflow_int() != 0,
+            fifo_watermark: status.fifo_wm_int() != 0,
             wake_on_motion: status.wom_int(),
             dmp: status.dmp_int_1(),
             i2c_master: status.i_2_c_mst_int(),
@@ -2412,11 +2153,8 @@ where
         // Configure accelerometer sample rate divider for low-power mode
         // The ODR value is just a byte that goes directly into the low register
         let odr = config.accel_rate.odr_value();
-        self.device.bank_2_accel_smplrt_div_1().write(|w| {
-            w.set_accel_smplrt_div_1(0); // High byte is 0 for these rates
-        })?;
-        self.device.bank_2_accel_smplrt_div_2().write(|w| {
-            w.set_accel_smplrt_div_2(odr);
+        self.device.bank_2_accel_smplrt_div().write(|w| {
+            w.set_accel_smplrt_div(u16::from(odr));
         })?;
 
         // Configure accelerometer for LOW-POWER MODE per Table 19 of datasheet
@@ -2733,12 +2471,8 @@ where
         })?;
 
         // Configure sample rate divider
-        self.device.bank_2_accel_smplrt_div_1().write(|w| {
-            w.set_accel_smplrt_div_1((config.sample_rate_div >> 8) as u8);
-        })?;
-
-        self.device.bank_2_accel_smplrt_div_2().write(|w| {
-            w.set_accel_smplrt_div_2((config.sample_rate_div & 0xFF) as u8);
+        self.device.bank_2_accel_smplrt_div().write(|w| {
+            w.set_accel_smplrt_div(config.sample_rate_div);
         })?;
 
         self.accel_config = config;
@@ -4269,6 +4003,11 @@ where
 
         // Step 1: Enable I2C master mode
         self.select_bank(Bank::Bank0)?;
+
+        self.device
+            .int_pin_cfg()
+            .modify(|w| w.set_bypass_en(false))?;
+
         self.device.user_ctrl().modify(|w| {
             w.set_i_2_c_mst_en(true);
         })?;
@@ -4443,6 +4182,9 @@ where
             gyro_calibration: crate::sensors::GyroCalibration::default(),
             mag_calibration: crate::sensors::MagCalibration::default(),
             mag_initialized: false,
+
+            #[cfg(feature = "dmp")]
+            dmp_packet_size: 0,
         };
 
         // Verify WHO_AM_I
@@ -4664,11 +4406,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     async fn read_accel(&mut self) -> Result<AccelData, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read all 6 bytes atomically to prevent torn reads
         // Register addresses: ACCEL_XOUT_H (0x2D) through ACCEL_ZOUT_L (0x32)
         const ACCEL_XOUT_H: u8 = 0x2D;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 6];
         self.device
             .interface
@@ -4690,11 +4433,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     async fn read_gyro(&mut self) -> Result<GyroData, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read all 6 bytes atomically to prevent torn reads
         // Register addresses: GYRO_XOUT_H (0x33) through GYRO_ZOUT_L (0x38)
         const GYRO_XOUT_H: u8 = 0x33;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 6];
         self.device
             .interface
@@ -4718,11 +4462,12 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub async fn read_temperature(&mut self) -> Result<i16, Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
         // Read both bytes atomically to prevent torn reads
         // Register addresses: TEMP_OUT_H (0x39) through TEMP_OUT_L (0x3A)
         const TEMP_OUT_H: u8 = 0x39;
+
+        self.select_bank(Bank::Bank0).await?;
+
         let mut buffer = [0u8; 2];
         self.device
             .interface
@@ -4843,16 +4588,9 @@ where
 
         // Configure sample rate divider
         self.device
-            .bank_2_accel_smplrt_div_1()
+            .bank_2_accel_smplrt_div()
             .write_async(|w| {
-                w.set_accel_smplrt_div_1((config.sample_rate_div >> 8) as u8);
-            })
-            .await?;
-
-        self.device
-            .bank_2_accel_smplrt_div_2()
-            .write_async(|w| {
-                w.set_accel_smplrt_div_2((config.sample_rate_div & 0xFF) as u8);
+                w.set_accel_smplrt_div(config.sample_rate_div);
             })
             .await?;
 
@@ -4865,17 +4603,16 @@ where
 
     /// Read Bank 2 accelerometer configuration registers
     ///
-    /// Returns `(config_byte, div1, div2)` representing the raw register values
+    /// Returns `(config_byte, div)` representing the raw register values
     ///
     /// # Errors
     ///
     /// Returns an error if communication with the device fails.
-    pub async fn read_bank2_accel_config(&mut self) -> Result<(u8, u8, u8), Error<I::Error>> {
+    pub async fn read_bank2_accel_config(&mut self) -> Result<(u8, u16), Error<I::Error>> {
         self.select_bank(Bank::Bank2).await?;
 
         let config_reg = self.device.bank_2_accel_config().read_async().await?;
-        let div1_reg = self.device.bank_2_accel_smplrt_div_1().read_async().await?;
-        let div2_reg = self.device.bank_2_accel_smplrt_div_2().read_async().await?;
+        let div_reg = self.device.bank_2_accel_smplrt_div().read_async().await?;
 
         // Reconstruct raw bytes
         let mut config = 0u8;
@@ -4885,11 +4622,8 @@ where
         config |= config_reg.accel_fs_sel() << 1;
         config |= config_reg.accel_dlpfcfg() << 3;
 
-        let div1 = div1_reg.accel_smplrt_div_1();
-        let div2 = div2_reg.accel_smplrt_div_2();
-
         self.select_bank(Bank::Bank0).await?;
-        Ok((config, div1, div2))
+        Ok((config, div_reg.accel_smplrt_div()))
     }
 
     /// Read raw accelerometer data (16-bit signed values)
@@ -5419,12 +5153,8 @@ where
     pub async fn fifo_count(&mut self) -> Result<u16, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
 
-        let count_h = self.device.fifo_counth().read_async().await?;
-        let count_l = self.device.fifo_countl().read_async().await?;
-
-        let count = u16::from_be_bytes([count_h.fifo_cnt_h(), count_l.fifo_cnt_l()]);
-
-        Ok(count)
+        let count = self.device.fifo_count().read_async().await?;
+        Ok(count.count())
     }
 
     /// Read raw data from FIFO
@@ -5534,7 +5264,7 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
-        use crate::dmp::firmware::{DMP_FIRMWARE, DMP_START_ADDRESS};
+        use crate::dmp::firmware::{DMP_LOAD_START, DMP_START_ADDRESS, FirmwareReader};
 
         // Ensure we're in Bank 0 for DMP memory access
         const WRITE_CHUNK_SIZE: usize = 16;
@@ -5542,9 +5272,16 @@ where
 
         self.select_bank(Bank::Bank0).await?;
 
-        let mut current_address: u16 = 0;
+        let mut current_address: u16 = DMP_LOAD_START;
+        let mut chunk = [0u8; WRITE_CHUNK_SIZE];
+        let mut reader = FirmwareReader::new();
 
-        for chunk in DMP_FIRMWARE.chunks(WRITE_CHUNK_SIZE) {
+        loop {
+            let bytes_read = reader.read(&mut chunk);
+            if bytes_read == 0 {
+                break;
+            }
+
             // Calculate which bank and address offset we're at
             #[allow(clippy::cast_possible_truncation)]
             let bank = (current_address / DMP_BANK_SIZE as u16) as u8;
@@ -5569,21 +5306,24 @@ where
 
             // Write the data bytes sequentially to MEM_R_W
             // The address auto-increments after each write
-            for &byte in chunk {
-                self.device
-                    .mem_rw()
-                    .write_async(|w| {
-                        w.set_mem_r_w(byte);
-                    })
-                    .await?;
-            }
+            // for byte in chunk {
+            //     self.device
+            //         .mem_rw()
+            //         .write_async(|w| {
+            //             w.set_mem_r_w(byte);
+            //         })
+            //         .await?;
+            // }
 
-            #[allow(clippy::cast_possible_truncation)]
-            let chunk_len = chunk.len() as u16;
-            current_address += chunk_len;
+            self.device
+                .interface
+                .write_register(0x7D, 8, &chunk[..bytes_read])
+                .await?;
+
+            current_address += u16::try_from(bytes_read).unwrap_or(u16::MAX);
 
             // Small delay every few chunks to allow I2C bus to settle
-            if current_address % 256 == 0 {
+            if current_address.is_multiple_of(256) {
                 delay.delay_us(100).await;
             }
         }
@@ -5592,20 +5332,10 @@ where
         self.select_bank(Bank::Bank2).await?;
 
         // Set the DMP program start address (0x1000)
-        let addr_high = (DMP_START_ADDRESS >> 8) as u8;
-        let addr_low = (DMP_START_ADDRESS & 0xFF) as u8;
-
         self.device
-            .bank_2_prgm_start_addrh()
+            .bank_2_prgm_start_addr()
             .write_async(|w| {
-                w.set_prgm_start_addrh(addr_high);
-            })
-            .await?;
-
-        self.device
-            .bank_2_prgm_start_addrl()
-            .write_async(|w| {
-                w.set_prgm_start_addrl(addr_low);
+                w.set_prgm_start_addr(DMP_START_ADDRESS);
             })
             .await?;
 
@@ -5755,15 +5485,9 @@ where
 
         // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
         self.device
-            .bank_2_accel_smplrt_div_1()
+            .bank_2_accel_smplrt_div()
             .write_async(|w| {
-                w.set_accel_smplrt_div_1(0);
-            })
-            .await?;
-        self.device
-            .bank_2_accel_smplrt_div_2()
-            .write_async(|w| {
-                w.set_accel_smplrt_div_2(0);
+                w.set_accel_smplrt_div(0);
             })
             .await?;
 
@@ -5848,10 +5572,7 @@ where
     /// // Initialize DMP
     /// driver.dmp_init(&mut delay).await?;
     ///
-    /// // Enable FIFO
-    /// driver.fifo_enable(true).await?;
-    ///
-    /// // Enable DMP
+    /// // Enable DMP & FIFO
     /// driver.dmp_enable(true).await?;
     ///
     /// // Now DMP is running and writing data to FIFO
@@ -5878,16 +5599,20 @@ where
                     .await?;
             }
 
+            // Note: Accelerometer and gyroscope must NOT be in cycle mode for DMP
             let lp_config = self.device.lp_config().read_async().await?;
-            if lp_config.accel_cycle() || lp_config.gyro_cycle() {
+            if lp_config.accel_cycle() || lp_config.gyro_cycle() || !lp_config.i_2_c_mst_cycle() {
                 #[cfg(feature = "defmt")]
-                defmt::warn!("DMP Enable: Forcing accel/gyro cycle modes OFF (were enabled)");
+                defmt::warn!(
+                    "DMP Enable: Forcing accel/gyro cycle modes OFF (were enabled), I2C Mst cycle ON"
+                );
 
                 self.device
                     .lp_config()
-                    .modify_async(|w| {
+                    .write_async(|w| {
                         w.set_accel_cycle(false);
                         w.set_gyro_cycle(false);
+                        w.set_i_2_c_mst_cycle(true);
                     })
                     .await?;
             }
@@ -5917,6 +5642,20 @@ where
                     .await?;
             }
         }
+
+        // Turn off what goes into the FIFO through FIFO_EN_1, FIFO_EN_2
+        // Stop the accelerometer, gyro and temperature data from being written to the FIFO by writing zero to FIFO_EN_2
+        if enable {
+            self.device
+                .fifo_en_1()
+                .write_with_zero_async(|_| {})
+                .await?;
+            self.device
+                .fifo_en_2()
+                .write_with_zero_async(|_| {})
+                .await?;
+        }
+
         // Enable/disable DMP, FIFO, and I2C master together
         // FIFO_EN is needed for internal sensor→DMP routing
         // I2C master is needed ONLY for magnetometer data (9-axis mode)
@@ -5930,243 +5669,45 @@ where
             })
             .await?;
 
-        // Enable sensor data routing to DMP internal data path via FIFO_EN_2
-        // This is required for the DMP to receive sensor data
-        if enable {
-            self.device
-                .fifo_en_2()
-                .write_async(|w| {
-                    w.set_gyro_x_fifo_en(true);
-                    w.set_gyro_y_fifo_en(true);
-                    w.set_gyro_z_fifo_en(true);
-                    w.set_accel_fifo_en(true);
-                })
-                .await?;
-        } else {
-            self.device
-                .fifo_en_2()
-                .write_async(|w| {
-                    w.set_gyro_x_fifo_en(false);
-                    w.set_gyro_y_fifo_en(false);
-                    w.set_gyro_z_fifo_en(false);
-                    w.set_accel_fifo_en(false);
-                })
-                .await?;
-        }
-
-        // Enable I2C master cycle mode for magnetometer data collection
-        // Note: Accelerometer and gyroscope must NOT be in cycle mode for DMP
-        if enable {
-            // Enable I2C master cycle mode (LP_CONFIG = 0x40)
-            self.device
-                .lp_config()
-                .modify_async(|w| {
-                    w.set_i_2_c_mst_cycle(true);
-                })
-                .await?;
-
-            // Enable DMP interrupt - this may be required to start data flow
-            self.device
-                .int_enable()
-                .modify_async(|w| {
-                    w.set_dmp_int_1_en(true);
-                })
-                .await?;
-        } else {
-            // Disable DMP interrupt when disabling DMP
-            self.device
-                .int_enable()
-                .modify_async(|w| {
-                    w.set_dmp_int_1_en(false);
-                })
-                .await?;
-        }
-
         Ok(())
     }
 
     #[cfg(feature = "dmp")]
-    /// Enable sensor data routing to DMP internal data path
-    ///
-    /// Configures the FIFO_EN_2 register to route accelerometer and gyroscope data
-    /// to the DMP processor. This is required for DMP operation.
-    ///
-    /// Note: The magnetometer uses a separate I2C slave data path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use icm20948::*;
-    /// # let mut imu = Icm20948Driver::new_i2c(todo!(), Address::Primary).unwrap();
-    /// // After enabling DMP, enable sensor routing
-    /// imu.dmp_enable(true).await?;
-    /// imu.dmp_enable_sensor_routing().await?;
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub async fn dmp_enable_sensor_routing(&mut self) -> Result<(), Error<I::Error>> {
-        self.select_bank(Bank::Bank0).await?;
-
-        // Enable accel and gyro to internal data bus (shared by FIFO and DMP)
-        // This is required for DMP to receive sensor samples
-        self.device
-            .fifo_en_2()
-            .modify_async(|w| {
-                w.set_accel_fifo_en(true);
-                w.set_gyro_x_fifo_en(true);
-                w.set_gyro_y_fifo_en(true);
-                w.set_gyro_z_fifo_en(true);
-            })
-            .await?;
-
-        // Reset FIFO to clear any stale data and reinitialize the data path
-        self.device
-            .fifo_rst()
-            .write_async(|w| {
-                w.set_fifo_reset(0x1F); // Reset all FIFOs
-            })
-            .await?;
-
-        // Small delay to allow FIFO reset to complete
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Enable sensor fusion for DMP processing
-    ///
-    /// Configures the DMP to perform 9-axis sensor fusion by writing the appropriate
-    /// control registers. This must be called **after** `dmp_enable()` because the DMP
-    /// firmware initializes these registers on startup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Enable DMP first
-    /// driver.dmp_enable(true).await?;
-    ///
-    /// // THEN tell it which sensors to use
-    /// driver.dmp_enable_sensor_fusion().await?;
-    /// ```
-    pub async fn dmp_enable_sensor_fusion(&mut self) -> Result<(), Error<I::Error>> {
-        use crate::dmp::config::DmpMemoryAddresses;
-
-        // Calculate DATA_OUT_CTL1 value for 9-axis quaternion
-        // GYRO_CALIBR (0x0008) + QUAT9 (0x0400) + ACCEL (0x8000) = 0x8408
-        let data_out_ctl1: u16 = 0x8408;
-
-        // Calculate DATA_INTR_CTL - must match DATA_OUT_CTL1!
-        let data_intr_ctl: u16 = 0x8408;
-
-        // Calculate DATA_OUT_CTL2 (accuracy bits)
-        // ACCEL_ACCURACY (0x0001) + GYRO_ACCURACY (0x0002) + COMPASS_ACCURACY (0x0004) = 0x0007
-        let data_out_ctl2: u16 = 0x0007;
-
-        // Calculate MOTION_EVENT_CTL
-        // ACCEL_CALIBR (0x0001) + GYRO_CALIBR (0x0002) + COMPASS_CALIBR (0x0004) + 9AXIS (0x0100) = 0x0107
-        let motion_event_ctl: u16 = 0x0107;
-
-        // Calculate DATA_RDY_STATUS
-        // GYRO (0x0001) + ACCEL (0x0002) + COMPASS (0x0008) = 0x000B
-        let data_rdy_status: u16 = 0x000B;
-
-        #[cfg(feature = "defmt")]
-        defmt::info!(
-            "Writing sensor fusion config AFTER DMP enable: DATA_OUT_CTL1=0x{:04X}, DATA_INTR_CTL=0x{:04X}",
-            data_out_ctl1,
-            data_intr_ctl
-        );
-
-        // Write DATA_OUT_CTL1
-        self.write_dmp_memory_async(
-            DmpMemoryAddresses::DATA_OUT_CTL1,
-            &data_out_ctl1.to_be_bytes(),
-        )
-        .await?;
-
-        // Write DATA_OUT_CTL2
-        self.write_dmp_memory_async(
-            DmpMemoryAddresses::DATA_OUT_CTL2,
-            &data_out_ctl2.to_be_bytes(),
-        )
-        .await?;
-
-        // Write DATA_INTR_CTL (MUST match DATA_OUT_CTL1!)
-        self.write_dmp_memory_async(
-            DmpMemoryAddresses::DATA_INTR_CTL,
-            &data_intr_ctl.to_be_bytes(),
-        )
-        .await?;
-
-        // Write MOTION_EVENT_CTL
-        self.write_dmp_memory_async(
-            DmpMemoryAddresses::MOTION_EVENT_CTL,
-            &motion_event_ctl.to_be_bytes(),
-        )
-        .await?;
-
-        // Write DATA_RDY_STATUS
-        self.write_dmp_memory_async(
-            DmpMemoryAddresses::DATA_RDY_STATUS,
-            &data_rdy_status.to_be_bytes(),
-        )
-        .await?;
-
-        // Small delay for DMP to process
-        for _ in 0..10000 {
-            core::hint::spin_loop();
-        }
-
-        // Verify DATA_RDY_STATUS
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory_async(DmpMemoryAddresses::DATA_RDY_STATUS, &mut readback)
-            .await?;
-        let status = ((readback[0] as u16) << 8) | (readback[1] as u16);
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!("DATA_RDY_STATUS readback: 0x{:04X}", status);
-
-        Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Set DMP output data rate for a specific sensor or quaternion (async)
+    /// Set DMP output data rate divider for a specific sensor or quaternion (async)
     ///
     /// This configures how often the DMP produces output for a given data type.
-    /// Setting interval to 0 means "use the sensor's sample rate" (no decimation).
+    /// The DMP runs at a base internal rate of 225Hz. The final output data rate (ODR)
+    /// is calculated using the formula: `ODR = 225Hz / (divider + 1)`.
+    ///
+    /// Examples:
+    /// - `divider = 0` -> 225Hz / 1 = 225.00 Hz (Maximum DMP output rate)
+    /// - `divider = 1` -> 225Hz / 2 = 112.50 Hz
+    /// - `divider = 3` -> 225Hz / 4 = 56.25 Hz
+    /// - `divider = 4` -> 225Hz / 5 = 45.00 Hz
     ///
     /// # Arguments
     ///
     /// * `odr_register` - The ODR register to configure (from `DmpOdrRegisters`)
-    /// * `interval` - Output interval (0 = sensor rate, 1+ = decimation factor)
+    /// * `divider` - The rate divider to apply (e.g., 0 for 225Hz, 3 for 56.25Hz)
     ///
     /// # Notes
     ///
     /// When changing an ODR value, the corresponding ODR counter must also be reset to 0.
-    /// This function writes both the ODR register and resets its counter.
+    /// This function handles writing both the ODR divider register and resetting its counter.
     ///
     /// # Errors
     ///
-    /// Returns an error if DMP memory write fails.
+    /// Returns an error if DMP memory write fails or if an unknown ODR register is provided.
+    #[allow(dead_code)]
     async fn dmp_set_odr_async(
         &mut self,
         odr_register: u16,
-        interval: u16,
+        divider: u16,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::{DmpOdrCounterRegisters, DmpOdrRegisters};
 
-        // Write ODR value
-        let odr_bytes = interval.to_be_bytes();
+        // Write ODR divider value
+        let odr_bytes = divider.to_be_bytes();
         self.write_dmp_memory_async(odr_register, &odr_bytes)
             .await?;
 
@@ -6179,10 +5720,14 @@ where
             DmpOdrRegisters::CPASS => DmpOdrCounterRegisters::CPASS,
             DmpOdrRegisters::GYRO_CALIBR => DmpOdrCounterRegisters::GYRO_CALIBR,
             DmpOdrRegisters::CPASS_CALIBR => DmpOdrCounterRegisters::CPASS_CALIBR,
+            DmpOdrRegisters::ALS => DmpOdrCounterRegisters::ALS,
+            DmpOdrRegisters::PQUAT6 => DmpOdrCounterRegisters::PQUAT6,
+            DmpOdrRegisters::GEOMAG => DmpOdrCounterRegisters::GEOMAG,
+            DmpOdrRegisters::PRESSURE => DmpOdrCounterRegisters::PRESSURE,
             _ => return Err(Error::InvalidConfig), // Unknown ODR register
         };
 
-        // Reset the counter to 0
+        // Reset the counter to 0 to apply the new divider immediately
         let zero_bytes = [0u8, 0u8];
         self.write_dmp_memory_async(counter_register, &zero_bytes)
             .await?;
@@ -6191,9 +5736,10 @@ where
     }
 
     #[cfg(feature = "dmp")]
+    #[allow(dead_code)]
     /// Configure which sensors the DMP should expect data from (async)
     ///
-    /// This function writes to the DATA_RDY_STATUS register to tell the DMP firmware
+    /// This function writes to the `DATA_RDY_STATUS` register to tell the DMP firmware
     /// which sensors are available and should be monitored. This is critical for DMP
     /// operation - without this, the DMP won't process sensor data.
     ///
@@ -6214,7 +5760,7 @@ where
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::{DmpDataReadyStatus, DmpMemoryAddresses};
 
-        let mut status = 0u16;
+        let mut status = DmpDataReadyStatus::empty();
 
         if gyro {
             status |= DmpDataReadyStatus::GYRO;
@@ -6235,7 +5781,7 @@ where
             status
         );
 
-        let status_bytes = status.to_be_bytes();
+        let status_bytes = status.bits().to_be_bytes();
         self.write_dmp_memory_async(DmpMemoryAddresses::DATA_RDY_STATUS, &status_bytes)
             .await?;
 
@@ -6243,31 +5789,52 @@ where
     }
 
     #[cfg(feature = "dmp")]
-    /// Configure DMP motion event control (calibration and fusion features) (async)
+    #[allow(dead_code)]
+    #[allow(clippy::fn_params_excessive_bools)]
+    /// Set DMP Motion Event Control (`MOTION_EVENT_CTL`) register
     ///
-    /// This function writes to the MOTION_EVENT_CTL register to enable various
-    /// DMP features including sensor calibration and 9-axis fusion.
+    /// This register enables or disables various calibration and sensor fusion engines
+    /// inside the DMP. All available flags are exposed as parameters.
     ///
-    /// # Arguments
+    /// # Parameters
     ///
-    /// * `accel_calibr` - Enable accelerometer calibration
-    /// * `gyro_calibr` - Enable gyroscope calibration
-    /// * `compass_calibr` - Enable compass/magnetometer calibration
-    /// * `nine_axis` - Enable 9-axis fusion (requires all sensors)
+    /// * `accel_calibr`        - Enable accelerometer auto‑calibration
+    /// * `gyro_calibr`         - Enable gyroscope auto‑calibration
+    /// * `compass_calibr`      - Enable magnetometer auto‑calibration
+    /// * `nine_axis`           - Enable 9‑axis sensor fusion (accel + gyro + mag)
+    /// * `geomag`              - Enable geomagnetic rotation vector output
+    /// * `pedometer_interrupt` - Enable pedometer interrupt generation
     ///
-    /// # Errors
+    /// # Notes
     ///
-    /// Returns an error if DMP memory write fails.
+    /// - The written value is the bitwise OR of the enabled flags.
+    /// - Flags not listed (currently none) are left unchanged because this function
+    ///   writes the complete register value.
+    /// - For a complete DMP configuration, consider using `ConfigSequence::from_config()`,
+    ///   which automatically sets the appropriate motion event flags based on the
+    ///   high‑level `DmpConfig`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() {
+    /// # let mut icm = ...;
+    /// // Enable all calibrations, 9‑axis fusion, and pedometer interrupt
+    /// icm.dmp_set_motion_event_control_async(true, true, true, true, false, true).await.unwrap();
+    /// # }
+    /// ```
     async fn dmp_set_motion_event_control_async(
         &mut self,
         accel_calibr: bool,
         gyro_calibr: bool,
         compass_calibr: bool,
         nine_axis: bool,
+        geomag: bool,
+        pedometer_interrupt: bool,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::{DmpMemoryAddresses, DmpMotionEventControl};
 
-        let mut control = 0u16;
+        let mut control = DmpMotionEventControl::empty();
 
         if accel_calibr {
             control |= DmpMotionEventControl::ACCEL_CALIBR;
@@ -6281,161 +5848,27 @@ where
         if nine_axis {
             control |= DmpMotionEventControl::NINE_AXIS;
         }
+        if geomag {
+            control |= DmpMotionEventControl::GEOMAG;
+        }
+        if pedometer_interrupt {
+            control |= DmpMotionEventControl::PEDOMETER_INTERRUPT;
+        }
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            "Setting MOTION_EVENT_CTL: accel_cal={} gyro_cal={} compass_cal={} 9axis={} -> 0x{:04X}",
+            "Setting MOTION_EVENT_CTL: accel_cal={} gyro_cal={} compass_cal={} 9axis={} geomag={} ped_int={} -> 0x{:04X}",
             accel_calibr,
             gyro_calibr,
             compass_calibr,
             nine_axis,
+            geomag,
+            pedometer_interrupt,
             control
         );
 
-        let control_bytes = control.to_be_bytes();
+        let control_bytes = control.bits().to_be_bytes();
         self.write_dmp_memory_async(DmpMemoryAddresses::MOTION_EVENT_CTL, &control_bytes)
-            .await?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Configure DMP sensors after enabling DMP (async version)
-    ///
-    /// This function performs the complete sensor configuration sequence that must happen
-    /// AFTER the DMP is enabled. It configures:
-    /// 1. Set ODR for accelerometer and gyroscope (and magnetometer if enabled)
-    /// 2. Set ODR for quaternion output
-    /// 3. Enable sensors via DATA_RDY_STATUS
-    /// 4. Enable calibration and fusion via MOTION_EVENT_CTL
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Load firmware and configure DMP
-    /// imu.dmp_init(&mut delay).await?;
-    /// imu.dmp_configure(&config).await?;
-    /// imu.dmp_enable(true).await?;
-    ///
-    /// // Now enable sensors for DMP operation
-    /// imu.dmp_configure_sensors(true).await?;  // Enable 9-axis with magnetometer
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any DMP memory write fails.
-    pub async fn dmp_configure_sensors(
-        &mut self,
-        enable_magnetometer: bool,
-    ) -> Result<(), Error<I::Error>> {
-        use crate::dmp::config::{DmpMemoryAddresses, DmpOdrRegisters};
-
-        #[cfg(feature = "defmt")]
-        defmt::info!(
-            "Configuring DMP sensors (magnetometer: {})",
-            enable_magnetometer
-        );
-
-        // Ensure chip is awake and not in low power mode
-        self.select_bank(Bank::Bank0).await?;
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_sleep(false);
-            })
-            .await?;
-
-        // Exit low power mode before writing DMP registers
-        self.device
-            .lp_config()
-            .modify_async(|w| {
-                w.set_i_2_c_mst_cycle(false);
-                w.set_accel_cycle(false);
-                w.set_gyro_cycle(false);
-            })
-            .await?;
-
-        // Small delay after power mode change
-        for _ in 0..1000 {
-            core::hint::spin_loop();
-        }
-
-        // Step 1: Set ODR for raw sensors (0 = use sensor sample rate)
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Setting ODR for accelerometer");
-        self.dmp_set_odr_async(DmpOdrRegisters::ACCEL, 0).await?;
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Setting ODR for gyroscope");
-        self.dmp_set_odr_async(DmpOdrRegisters::GYRO, 0).await?;
-
-        if enable_magnetometer {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for compass/magnetometer");
-            self.dmp_set_odr_async(DmpOdrRegisters::CPASS, 0).await?;
-        }
-
-        // Step 2: Set ODR for quaternion output
-        let quat_odr = if enable_magnetometer {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for 9-axis quaternion");
-            DmpOdrRegisters::QUAT9
-        } else {
-            #[cfg(feature = "defmt")]
-            defmt::debug!("Setting ODR for 6-axis quaternion");
-            DmpOdrRegisters::QUAT6
-        };
-        self.dmp_set_odr_async(quat_odr, 0).await?;
-
-        // Step 3: Enable sensors (tell DMP which sensors to expect)
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Enabling sensor inputs for DMP");
-        self.dmp_enable_sensors_async(true, true, enable_magnetometer)
-            .await?;
-
-        // Verify DATA_RDY_STATUS write
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory_async(DmpMemoryAddresses::DATA_RDY_STATUS, &mut readback)
-            .await?;
-        let status = u16::from_be_bytes(readback);
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!(
-            "DATA_RDY_STATUS verification: wrote=0x000B read=0x{:04X}",
-            status
-        );
-
-        // Step 4: Enable calibration and fusion
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Configuring motion event control (calibration and fusion)");
-        self.dmp_set_motion_event_control_async(
-            true,                // accel_calibr
-            true,                // gyro_calibr
-            enable_magnetometer, // compass_calibr
-            enable_magnetometer, // nine_axis (only if magnetometer enabled)
-        )
-        .await?;
-
-        // Verify MOTION_EVENT_CTL write
-        self.read_dmp_memory_async(DmpMemoryAddresses::MOTION_EVENT_CTL, &mut readback)
-            .await?;
-        let _motion_ctl = u16::from_be_bytes(readback);
-
-        // Re-enable low power mode after writing DMP registers
-        // This is required for DMP to properly process sensor data
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_lp_en(true);
-            })
-            .await?;
-
-        // Re-enable I2C master cycle mode
-        self.device
-            .lp_config()
-            .modify_async(|w| {
-                w.set_i_2_c_mst_cycle(true);
-            })
             .await?;
 
         Ok(())
@@ -6454,13 +5887,8 @@ where
     pub async fn read_fifo_count(&mut self) -> Result<u16, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
 
-        let count_h = self.device.fifo_counth().read_async().await?;
-        let count_l = self.device.fifo_countl().read_async().await?;
-
-        // Combine high (bits 12:8) and low (bits 7:0) bytes
-        let count = (u16::from(count_h.fifo_cnt_h()) << 8) | u16::from(count_l.fifo_cnt_l());
-
-        Ok(count)
+        let count = self.device.fifo_count().read_async().await?;
+        Ok(count.count())
     }
 
     /// Read raw bytes from the FIFO
@@ -6562,27 +5990,72 @@ where
         config: &crate::dmp::DmpConfig,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
-
-        // Ensure we're in Bank 0
-        self.select_bank(Bank::Bank0).await?;
-
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
         // The DMP needs continuous magnetometer data to run 9-axis fusion
         // Disabling I2C master causes the DMP to stop producing output
 
+        let pll_correction = self
+            .device
+            .bank_1_timebase_correction_pll()
+            .read_async()
+            .await?;
+
         // Create configuration sequence
-        let seq = ConfigSequence::from_config(config);
+        let seq =
+            ConfigSequence::from_config_and_pll(config, pll_correction.timebase_correction_pll());
 
         #[cfg(feature = "defmt")]
         defmt::debug!(
-            "DMP configure: feature_mask=0x{:04X}, data_out_ctl2=0x{:04X}, data_rdy_status=0x{:04X}, motion_event_ctl=0x{:04X}",
-            seq.feature_mask,
+            "DMP configure:pll_correction={}, feature_mask=0x{:04X}, data_out_ctl2=0x{:04X}, data_rdy_status=0x{:04X}, motion_event_ctl=0x{:04X}",
+            pll_correction.timebase_correction_pll(),
+            seq.features,
             seq.data_out_ctl2,
             seq.data_rdy_status,
             seq.motion_event_ctl
         );
 
-        // Get the complete initialization sequence (36 writes)
+        // Ensure we're in Bank 0
+        self.select_bank(Bank::Bank2).await?;
+
+        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+        self.device
+            .bank_2_gyro_config_1()
+            .modify_async(|w| {
+                w.set_gyro_fchoice(true);
+                w.set_gyro_fs_sel(0b11); // 2000dps
+            })
+            .await?;
+
+        // Set gyroscope sample rate divider
+        self.device
+            .bank_2_gyro_smplrt_div()
+            .write_async(|w| {
+                w.set_gyro_smplrt_div(seq.sample_rate.gyro_sample_rate_div());
+            })
+            .await?;
+
+        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+
+        self.device
+            .bank_2_accel_config()
+            .modify_async(|w| {
+                w.set_accel_fchoice(true);
+                w.set_accel_fs_sel(0b01); // ±4g
+            })
+            .await?;
+
+        // Set accelerometer sample rate divider
+        self.device
+            .bank_2_accel_smplrt_div()
+            .write_async(|w| {
+                w.set_accel_smplrt_div(seq.sample_rate.accel_sample_rate_div());
+            })
+            .await?;
+
+        // Ensure we're in Bank 0
+        self.select_bank(Bank::Bank0).await?;
+
+        // Get the complete initialization sequence
         let init_sequence = seq.get_init_sequence();
 
         // Write all configuration registers in one pass
@@ -6592,18 +6065,7 @@ where
                 .await?;
         }
 
-        // Write DATA_RDY_STATUS to indicate which sensors are available to the DMP
-        // This must be written before DMP is enabled
-        // Bits: 0x0001=Gyro, 0x0002=Accel, 0x0008=Compass
-        let data_rdy_status: u16 = 0x000B; // Gyro + Accel + Compass
-
-        self.write_dmp_memory_async(0x008A, &data_rdy_status.to_be_bytes())
-            .await?;
-
-        // Verify the write
-        let mut readback = [0u8; 2];
-        self.read_dmp_memory_async(0x008A, &mut readback).await?;
-        let _status = ((readback[0] as u16) << 8) | (readback[1] as u16);
+        self.dmp_packet_size = config.packet_size();
 
         Ok(())
     }
@@ -6621,7 +6083,7 @@ where
     ///
     /// Returns an error if communication with the device fails.
     #[cfg(feature = "dmp")]
-    async fn write_dmp_memory_async(
+    pub async fn write_dmp_memory_async(
         &mut self,
         address: u16,
         data: &[u8],
@@ -6647,15 +6109,17 @@ where
             })
             .await?;
 
-        // Write data bytes
-        for &byte in data {
-            self.device
-                .mem_rw()
-                .write_async(|w| {
-                    w.set_mem_r_w(byte);
-                })
-                .await?;
-        }
+        // // Write data bytes
+        // for &byte in data {
+        //     self.device
+        //         .mem_rw()
+        //         .write_async(|w| {
+        //             w.set_mem_r_w(byte);
+        //         })
+        //         .await?;
+        // }
+
+        self.device.interface.write_register(0x7D, 8, data).await?;
 
         Ok(())
     }
@@ -6673,7 +6137,7 @@ where
     ///
     /// Returns an error if communication with the device fails.
     #[cfg(feature = "dmp")]
-    async fn read_dmp_memory_async(
+    pub async fn read_dmp_memory_async(
         &mut self,
         address: u16,
         buffer: &mut [u8],
@@ -6702,12 +6166,13 @@ where
             })
             .await?;
 
-        // Read data bytes
-        for byte in buffer.iter_mut() {
-            let reg = self.device.mem_rw().read_async().await?;
-            *byte = reg.mem_r_w();
-        }
+        // // Read data bytes
+        // for byte in buffer.iter_mut() {
+        //     let reg = self.device.mem_rw().read_async().await?;
+        //     *byte = reg.mem_r_w();
+        // }
 
+        self.device.interface.read_register(0x7D, 8, buffer).await?;
         Ok(())
     }
 
@@ -6745,56 +6210,62 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
+        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
 
         // Check FIFO count
         let count = self.read_fifo_count().await?;
 
-        // Need at least a header (2 bytes)
+        // Need at least a primary header (2 bytes)
         if count < 2 {
             return Ok(None);
         }
 
-        // Read enough data for typical packet (header + quaternion)
-        // Maximum packet size is ~40 bytes for full configuration
-        let mut buffer = [0u8; 64];
-        let bytes_to_read = core::cmp::min(count as usize, buffer.len());
+        let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
+        self.read_fifo_raw(&mut packet_buf[0..self.dmp_packet_size])
+            .await?;
 
-        self.read_fifo_raw(&mut buffer[..bytes_to_read]).await?;
-
-        // Log raw header for debugging
         #[cfg(feature = "defmt")]
-        {
-            let header = u16::from_be_bytes([buffer[0], buffer[1]]);
+        if self.dmp_packet_size > 2 {
+            let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
-                "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} CAL_ACCEL={})",
+                "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
                 header,
-                (header & 0x0001) != 0,
-                (header & 0x0002) != 0,
-                (header & 0x0004) != 0,
-                (header & 0x0008) != 0,
-                (header & 0x0010) != 0,
-                (header & 0x0020) != 0
+                (header & DmpPacketHeader::QUAT6_BIT) != 0,
+                (header & DmpPacketHeader::QUAT9_BIT) != 0,
+                (header & DmpPacketHeader::ACCEL_BIT) != 0,
+                (header & DmpPacketHeader::GYRO_BIT) != 0,
+                (header & DmpPacketHeader::GYRO_CAL_BIT) != 0,
+                (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
             );
 
-            // Show first 8 bytes after header if we have quaternion
-            if (header & 0x0003) != 0 && bytes_to_read >= 10 {
+            // Show first 8 bytes after header if we have enough payload
+            if self.dmp_packet_size >= 10 {
                 defmt::debug!(
-                    "First quaternion bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    buffer[2],
-                    buffer[3],
-                    buffer[4],
-                    buffer[5],
-                    buffer[6],
-                    buffer[7],
-                    buffer[8],
-                    buffer[9]
+                    "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    packet_buf[2],
+                    packet_buf[3],
+                    packet_buf[4],
+                    packet_buf[5],
+                    packet_buf[6],
+                    packet_buf[7],
+                    packet_buf[8],
+                    packet_buf[9]
                 );
             }
         }
 
-        // Parse the packet
         let parser = DmpParser::new();
-        Ok(parser.parse_packet(&buffer[..bytes_to_read]))
+        if let Some((mut data, _consumed)) =
+            parser.parse_packet(&packet_buf[..self.dmp_packet_size])
+        {
+            if let Some(raw) = data.raw_accel {
+                let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
+                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+            }
+            Ok(Some(data))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Read quaternion data from DMP
@@ -6832,9 +6303,6 @@ where
                 return Ok(Some(quat));
             }
             if let Some(quat) = data.quaternion_6axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.game_rotation_vector {
                 return Ok(Some(quat));
             }
             if let Some(quat) = data.geomag_rotation_vector {
@@ -7636,10 +7104,10 @@ where
     /// # Configuration details
     ///
     /// The DMP requires a specific magnetometer setup:
-    /// - **I2C_SLV0**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
+    /// - **`I2C_SLV0`**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
     ///   with byte-swap and register grouping enabled
-    /// - **I2C_SLV1**: Triggers single measurement mode on each DMP sample cycle
-    /// - **I2C_MST_ODR_CONFIG**: Sets magnetometer sample rate to ~69 Hz
+    /// - **`I2C_SLV1`**: Triggers single measurement mode on each DMP sample cycle
+    /// - **`I2C_MST_ODR_CONFIG`**: Sets magnetometer sample rate to ~69 Hz
     ///
     /// # Arguments
     ///
@@ -7674,6 +7142,7 @@ where
     /// driver.dmp_configure(&config).await?;
     /// driver.dmp_enable(true).await?;
     /// ```
+    #[allow(clippy::too_many_lines)]
     pub async fn dmp_init_magnetometer<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
     where
         D: embedded_hal_async::delay::DelayNs,
@@ -7688,9 +7157,21 @@ where
 
         // Step 1: Enable I2C master mode
         self.select_bank(Bank::Bank0).await?;
+
+        self.device
+            .int_pin_cfg()
+            .modify_async(|w| w.set_bypass_en(false))
+            .await?;
+
+        self.device
+            .user_ctrl()
+            .modify_async(|w| w.set_i_2_c_mst_rst(true))
+            .await?;
+        delay.delay_ms(10).await;
         self.device
             .user_ctrl()
             .modify_async(|w| {
+                w.set_i_2_c_mst_rst(false);
                 w.set_i_2_c_mst_en(true);
             })
             .await?;
@@ -7704,6 +7185,13 @@ where
                 w.set_i_2_c_mst_clk(7); // 400 kHz I2C clock
             })
             .await?;
+
+        self.select_bank(Bank::Bank0).await?;
+        self.device
+            .lp_config()
+            .modify_async(|w| w.set_i_2_c_mst_cycle(true))
+            .await?;
+        delay.delay_ms(20).await;
 
         // Step 3: Verify magnetometer is present using Slave 4
         self.select_bank(Bank::Bank3).await?;
@@ -7917,39 +7405,21 @@ where
 
         // INT_ENABLE register
         self.device
-            .int_enable()
+            .int_enable_group()
             .write_async(|w| {
                 w.set_wom_int_en(config.wake_on_motion);
                 w.set_dmp_int_1_en(config.dmp);
                 w.set_i_2_c_mst_int_en(config.i2c_master);
                 w.set_pll_rdy_en(config.pll_ready);
-            })
-            .await?;
 
-        // INT_ENABLE_1 register
-        self.device
-            .int_enable_1()
-            .write_async(|w| {
                 w.set_raw_data_0_rdy_en(config.raw_data_ready);
-            })
-            .await?;
 
-        // INT_ENABLE_2 register (FIFO overflow)
-        self.device
-            .int_enable_2()
-            .write_async(|w| {
                 if config.fifo_overflow {
                     w.set_fifo_overflow_en(0x1F); // Enable all FIFOs
                 } else {
                     w.set_fifo_overflow_en(0);
                 }
-            })
-            .await?;
 
-        // INT_ENABLE_3 register (FIFO watermark)
-        self.device
-            .int_enable_3()
-            .write_async(|w| {
                 if config.fifo_watermark {
                     w.set_fifo_wm_en(0x1F); // Enable all FIFOs
                 } else {
@@ -7971,15 +7441,12 @@ where
     pub async fn read_interrupt_status(&mut self) -> Result<InterruptStatus, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
 
-        let status = self.device.int_status().read_async().await?;
-        let status1 = self.device.int_status_1().read_async().await?;
-        let status2 = self.device.int_status_2().read_async().await?;
-        let status3 = self.device.int_status_3().read_async().await?;
+        let status = self.device.int_status_group().read_async().await?;
 
         Ok(InterruptStatus {
-            raw_data_ready: status1.raw_data_0_rdy_int(),
-            fifo_overflow: status2.fifo_overflow_int() != 0,
-            fifo_watermark: status3.fifo_wm_int() != 0,
+            raw_data_ready: status.raw_data_0_rdy_int(),
+            fifo_overflow: status.fifo_overflow_int() != 0,
+            fifo_watermark: status.fifo_wm_int() != 0,
             wake_on_motion: status.wom_int(),
             dmp: status.dmp_int_1(),
             i2c_master: status.i_2_c_mst_int(),
@@ -8127,15 +7594,9 @@ where
         // The ODR value is just a byte that goes directly into the low register
         let odr = config.accel_rate.odr_value();
         self.device
-            .bank_2_accel_smplrt_div_1()
+            .bank_2_accel_smplrt_div()
             .write_async(|w| {
-                w.set_accel_smplrt_div_1(0); // High byte is 0 for these rates
-            })
-            .await?;
-        self.device
-            .bank_2_accel_smplrt_div_2()
-            .write_async(|w| {
-                w.set_accel_smplrt_div_2(odr);
+                w.set_accel_smplrt_div(u16::from(odr));
             })
             .await?;
 
@@ -8257,9 +7718,9 @@ where
 
     /// Set accelerometer and gyroscope to continuous sampling mode (async version)
     ///
-    /// This configures the LP_CONFIG register to disable cycle modes, enabling
-    /// continuous sampling. This is required for the ACCEL_SMPLRT_DIV and
-    /// GYRO_SMPLRT_DIV registers to take effect.
+    /// This configures the `LP_CONFIG` register to disable cycle modes, enabling
+    /// continuous sampling. This is required for the `ACCEL_SMPLRT_DIV` and
+    /// `GYRO_SMPLRT_DIV` registers to take effect.
     ///
     /// # Arguments
     /// * `enable_accel` - Enable continuous mode for accelerometer

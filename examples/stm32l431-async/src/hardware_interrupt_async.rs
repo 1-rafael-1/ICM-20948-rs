@@ -106,4 +106,3 @@ async fn main(_spawner: Spawner) {
             }
         }
     }
-}

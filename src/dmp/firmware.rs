@@ -5,8 +5,8 @@
 //!
 //! ## Source and Licensing
 //!
-//! This firmware is originally provided by InvenSense (TDK) and distributed via
-//! the SparkFun ICM-20948 Arduino Library under MIT license:
+//! This firmware is originally provided by `InvenSense` (TDK) and distributed via
+//! the `SparkFun` ICM-20948 Arduino Library under MIT license:
 //! <https://github.com/sparkfun/SparkFun_ICM-20948_ArduinoLibrary>
 //!
 //! ```text
@@ -41,17 +41,153 @@
 //! - **Loading**: Written to DMP memory via registers 0x7C/0x7D/0x7E
 //! - **Start Address**: 0x1000 (set via Bank 2, register 0x50)
 
-/// DMP firmware image (14,301 bytes)
-///
-/// Complete DMP firmware binary (version 3a) that must be loaded into the
-/// ICM-20948's DMP processor memory on every power-up before the DMP can be used.
-pub const DMP_FIRMWARE: &[u8] = &include!("firmware_data.rs");
+cfg_if::cfg_if!(
+    if #[cfg(feature = "dmp-lzss")] {
+        include!("firmware_data_lzss.rs");
+        /// A reader utility to sequentially read DMP firmware bytes.
+        ///
+        /// In `dmp-lzss` mode, this struct performs on-the-fly LZSS decompression,
+        /// keeping RAM usage minimal (only requiring a 2048-byte sliding window).
+        pub struct FirmwareReader {
+            in_pos: usize,
+            window: [u8; 2048],
+            win_pos: usize,
+            flags: u8,
+            bits_left: u8,
+            match_len: usize,
+            match_offset: usize,
+        }
+        impl Default for FirmwareReader {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+        impl FirmwareReader {
+            /// Creates a new `FirmwareReader` instance initialized for LZSS decompression.
+            pub const fn new() -> Self {
+                Self {
+                    in_pos: 0,
+                    window: [0; 2048],
+                    win_pos: 0,
+                    flags: 0,
+                    bits_left: 0,
+                    match_len: 0,
+                    match_offset: 0,
+                }
+            }
+            /// Fills the provided buffer with decompressed firmware bytes.
+            ///
+            /// Returns the number of bytes actually read. A return value of `0` indicates
+            pub fn read(&mut self, buf: &mut [u8]) -> usize {
+                let mut count = 0;
+                for b in buf.iter_mut() {
+                    if let Some(byte) = self.next_lzss_byte() {
+                        *b = byte;
+                        count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                count
+            }
+
+            /// Internal helper to decode the next byte from the LZSS stream.
+            fn next_lzss_byte(&mut self) -> Option<u8> {
+                let input = DMP_FIRMWARE;
+                if self.match_len > 0 {
+                    self.match_len -= 1;
+                    let b = self.window[(self.win_pos + 2048 - self.match_offset) % 2048];
+                    self.window[self.win_pos] = b;
+                    self.win_pos = (self.win_pos + 1) % 2048;
+                    return Some(b);
+                }
+                if self.bits_left == 0 {
+                    if self.in_pos >= input.len() {
+                        return None;
+                    }
+                    self.flags = input[self.in_pos];
+                    self.in_pos += 1;
+                    self.bits_left = 8;
+                }
+                if self.in_pos >= input.len() && (self.flags & 1) != 0 {
+                    return None;
+                }
+
+                let is_match = (self.flags & 1) != 0;
+                self.flags >>= 1;
+                self.bits_left -= 1;
+
+                if is_match {
+                    if self.in_pos + 1 >= input.len() {
+                        return None;
+                    }
+                    let b1 = u16::from(input[self.in_pos]);
+                    let b2 = u16::from(input[self.in_pos + 1]);
+                    self.in_pos += 2;
+                    let val = (b1 << 8) | b2;
+                    self.match_offset = ((val >> 5) + 1) as usize;
+                    self.match_len = ((val & 0x1F) + 3 - 1) as usize;
+
+                    let b = self.window[(self.win_pos + 2048 - self.match_offset) % 2048];
+                    self.window[self.win_pos] = b;
+                    self.win_pos = (self.win_pos + 1) % 2048;
+                    Some(b)
+                } else {
+                    if self.in_pos >= input.len() {
+                        return None;
+                    }
+                    let b = input[self.in_pos];
+                    self.in_pos += 1;
+                    self.window[self.win_pos] = b;
+                    self.win_pos = (self.win_pos + 1) % 2048;
+                    Some(b)
+                }
+            }
+        }
+    } else {
+        include!("firmware_data.rs");
+
+        /// A reader utility to sequentially read DMP firmware bytes.
+        ///
+        /// In uncompressed mode, this struct directly copies slices from the static
+        /// firmware array into the provided buffer for maximum performance.
+        pub struct FirmwareReader {
+            pos: usize,
+        }
+        impl Default for FirmwareReader {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+        impl FirmwareReader {
+            /// Creates a new `FirmwareReader` instance initialized to the start of the firmware.
+            pub const fn new() -> Self {
+                Self { pos: 0 }
+            }
+            /// Fills the provided buffer with firmware bytes.
+            ///
+            /// Returns the number of bytes actually read. A return value of `0` indicates
+            /// that the end of the firmware has been reached.
+            pub fn read(&mut self, buf: &mut [u8]) -> usize {
+                let remaining = DMP_FIRMWARE.len() - self.pos;
+                let to_read = remaining.min(buf.len());
+                if to_read == 0 { return 0; }
+                buf[..to_read].copy_from_slice(&DMP_FIRMWARE[self.pos..self.pos + to_read]);
+                self.pos += to_read;
+                to_read
+            }
+        }
+    }
+);
 
 /// Size of the DMP firmware in bytes
 pub const DMP_FIRMWARE_SIZE: usize = 14301;
 
 /// DMP firmware start address (to be written to Bank 2, register 0x50)
 pub const DMP_START_ADDRESS: u16 = 0x1000;
+
+/// DMP firmware write start pos
+pub const DMP_LOAD_START: u16 = 0x90;
 
 /// Memory bank select register (Bank 0, address 0x7E)
 pub const DMP_MEM_BANK_SEL: u8 = 0x7E;
@@ -62,11 +198,11 @@ pub const DMP_MEM_START_ADDR: u8 = 0x7C;
 /// Memory read/write register (Bank 0, address 0x7D)
 pub const DMP_MEM_R_W: u8 = 0x7D;
 
-/// Verify firmware size at compile time
-const _: () = {
-    // This will fail to compile if the firmware size doesn't match
-    assert!(DMP_FIRMWARE.len() == DMP_FIRMWARE_SIZE);
-};
+// /// Verify firmware size at compile time
+// const _: () = {
+//     // This will fail to compile if the firmware size doesn't match
+//     assert!(DMP_FIRMWARE.len() == DMP_FIRMWARE_SIZE);
+// };
 
 #[cfg(test)]
 mod tests {

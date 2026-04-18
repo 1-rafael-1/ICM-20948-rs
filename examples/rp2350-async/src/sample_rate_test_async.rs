@@ -165,7 +165,7 @@ async fn main(_spawner: Spawner) {
 
     // Check Bank 2 - ACCEL_CONFIG and SMPLRT_DIV
     match sensor.read_bank2_accel_config().await {
-        Ok((config_byte, div1, div2)) => {
+        Ok((config_byte, actual_div)) => {
             info!("Bank 2 - ACCEL_CONFIG: 0x{:02X}", config_byte);
             let fchoice = config_byte & 0x01;
             let fs_sel = (config_byte >> 1) & 0x03;
@@ -180,11 +180,8 @@ async fn main(_spawner: Spawner) {
                 error!("  ✗ ERROR: DLPF/divider bypassed (FCHOICE=0)!");
             }
 
-            let actual_div = ((div1 as u16) << 8) | (div2 as u16);
             let actual_hz = 1125 / (actual_div + 1);
             info!("Bank 2 - ACCEL_SMPLRT_DIV: {}", actual_div);
-            info!("  DIV_1: 0x{:02X} ({})", div1, div1);
-            info!("  DIV_2: 0x{:02X} ({})", div2, div2);
             info!("  Calculated ODR: {} Hz", actual_hz);
 
             if actual_div == ACCEL_SMPLRT_DIV {
