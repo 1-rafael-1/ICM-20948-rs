@@ -89,11 +89,13 @@ async fn main(_spawner: Spawner) {
     imu.dmp_init().unwrap();
     imu.dmp_init_magnetometer(&mut delay).unwrap();
 
+    let dmp_sample_rate_hz: u16 = 225;
+
     let dmp_config = DmpConfig::new()
         .with_quaternion_9axis(true)
         .with_calibrated_accel(true)
         .with_raw_accel(true)
-        .with_sample_rate(225);
+        .with_sample_rate(dmp_sample_rate_hz);
 
     imu.dmp_configure(&dmp_config).unwrap();
     imu.set_dmp_enable(true).unwrap();
@@ -109,7 +111,7 @@ async fn main(_spawner: Spawner) {
     let mut pos_x = 0.0f32;
     let mut pos_y = 0.0f32;
 
-    let dt = 1.0 / 56.0;
+    let dt = 1.0 / dmp_sample_rate_hz as f32;
 
     loop {
         imu_int.wait_for_high().await;
