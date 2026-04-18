@@ -27,8 +27,8 @@ use embassy_rp::{
 };
 use embassy_time::{Delay, Duration};
 use icm20948::{
-    sensors::{AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale},
     I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
+    sensors::{AccelConfig, AccelDlpf, AccelFullScale, GyroConfig, GyroDlpf, GyroFullScale},
 };
 use panic_probe as _;
 
@@ -116,7 +116,7 @@ async fn main(_spawner: Spawner) {
         if let (Ok(accel), Ok(gyro)) = (imu.read_accelerometer(), imu.read_gyroscope()) {
             counter = counter.wrapping_add(1);
 
-            if counter.is_multiple_of(10) == 0 {
+            if counter.is_multiple_of(10) {
                 info!(
                     "[10Hz Sample] Accel: [{}, {}, {}] g | Gyro: [{}, {}, {}] °/s",
                     accel.x, accel.y, accel.z, gyro.x, gyro.y, gyro.z
