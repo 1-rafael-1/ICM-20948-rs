@@ -17,9 +17,7 @@ const DEFAULT_MOTION_DETECTION_THRESHOLD_DIVISOR: i16 = 20;
 use crate::fifo::{FifoConfig, FifoConfigAdvanced, FifoOverflowStatus, FifoRecord};
 
 // Interrupt imports - needed in both blocking and async modes
-use crate::interrupt::{
-    DataReadyStatus, InterruptConfig, InterruptPinConfig, InterruptStatus, WomStatus,
-};
+use crate::interrupt::{DataReadyStatus, InterruptConfig, InterruptPinConfig, InterruptStatus};
 
 // Power management imports - needed in both blocking and async modes
 use crate::power::{
