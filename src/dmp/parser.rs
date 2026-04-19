@@ -104,9 +104,9 @@ impl DmpParser {
         if header & DmpPacketHeader::PRESSURE_BIT != 0 {
             size += DmpPacketSize::PRESSURE;
         }
-        // if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
-        //     size += DmpPacketSize::CAL_GYRO; // 12 bytes
-        // }
+        if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
+            size += DmpPacketSize::CAL_GYRO; // 12 bytes
+        }
         if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {
             size += DmpPacketSize::CAL_COMPASS; // 12 bytes
         }
@@ -248,13 +248,13 @@ impl DmpParser {
         }
 
         // 10. Calibrated Gyroscope (12 bytes)
-        // if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
-        //     if data.len() < offset + DmpPacketSize::CAL_GYRO {
-        //         return None;
-        //     }
-        //     dmp_data.calibrated_gyro = self.parse_calibrated_gyro(&data[offset..]);
-        //     offset += DmpPacketSize::CAL_GYRO;
-        // }
+        if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
+            if data.len() < offset + DmpPacketSize::CAL_GYRO {
+                return None;
+            }
+            dmp_data.dmp_calibrated_gyro = self.parse_calibrated_gyro(&data[offset..]);
+            offset += DmpPacketSize::CAL_GYRO;
+        }
 
         // 11. Calibrated Compass (12 bytes)
         if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {

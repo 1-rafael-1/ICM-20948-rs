@@ -1061,9 +1061,9 @@ impl DmpConfig {
         if c1.contains(DmpControl1Flags::QUAT9) || c1.contains(DmpControl1Flags::GEOMAG) {
             size += DmpPacketSize::QUAT9;
         }
-        // if c1.contains(DmpControl1Flags::CALIBRATED_GYRO) {
-        //     size += DmpPacketSize::CAL_GYRO;
-        // }
+        if c1.contains(DmpControl1Flags::CALIBRATED_GYRO) {
+            size += DmpPacketSize::CAL_GYRO;
+        }
         if c1.contains(DmpControl1Flags::CALIBRATED_COMPASS) {
             size += DmpPacketSize::CAL_COMPASS;
         }

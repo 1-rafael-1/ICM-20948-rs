@@ -403,8 +403,11 @@ pub struct DmpData {
     /// Calibrated accelerometer data
     pub calibrated_accel: Option<(i16, i16, i16)>,
 
-    /// Calibrated gyroscope data
+    /// Calibrated gyroscope data (raw - bias from DMP raw gyro stream)
     pub calibrated_gyro: Option<(i16, i16, i16)>,
+
+    /// Calibrated gyroscope data from DMP (32-bit values)
+    pub dmp_calibrated_gyro: Option<(i32, i32, i32)>,
 
     /// Calibrated magnetometer data
     pub calibrated_mag: Option<(i32, i32, i32)>,
