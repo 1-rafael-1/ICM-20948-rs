@@ -469,8 +469,21 @@ impl DmpParser {
     /// Returns `true` if header is valid, `false` otherwise.
     #[allow(clippy::unused_self)]
     pub const fn validate_header(&self, header: u16) -> bool {
-        // Header should have at least one data bit set
-        header != 0 && header < 0x8000 // Reasonable upper bound
+        // Header should have at least one data bit set and no unknown bits
+        let known_bits = DmpPacketHeader::HEADER2_BIT
+            | DmpPacketHeader::STEP_BIT
+            | DmpPacketHeader::COMPASS_CAL_BIT
+            | DmpPacketHeader::GYRO_CAL_BIT
+            | DmpPacketHeader::PRESSURE_BIT
+            | DmpPacketHeader::GEOMAG_BIT
+            | DmpPacketHeader::PQUAT6_BIT
+            | DmpPacketHeader::QUAT9_BIT
+            | DmpPacketHeader::QUAT6_BIT
+            | DmpPacketHeader::ALS_BIT
+            | DmpPacketHeader::COMPASS_BIT
+            | DmpPacketHeader::GYRO_BIT
+            | DmpPacketHeader::ACCEL_BIT;
+        header != 0 && (header & !known_bits) == 0
     }
 
     /// Extract packet header from FIFO data
