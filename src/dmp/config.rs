@@ -439,13 +439,13 @@ bitflags::bitflags! {
         /// Enable pedometer step counter (tracks total steps)
         const STEP_COUNTER           = 1 << 11;
 
-        // /// Enable significant motion detection
+        // /// Enable significant motion detection (not implemented yet; missing DMP memory config + packet parsing. PRs welcome.)
         // const SIGNIFICANT_MOTION       = 1 << 12;
-        // /// Enable tilt detector
+        // /// Enable tilt detector (not implemented yet; missing DMP memory config + packet parsing. PRs welcome.)
         // const TILT_DETECTOR            = 1 << 13;
-        // /// Enable pickup/flip detector
+        // /// Enable pickup/flip detector (not implemented yet; missing DMP memory config + packet parsing. PRs welcome.)
         // const PICKUP_DETECTOR          = 1 << 14;
-        // /// Enable activity classification (BAC)
+        // /// Enable activity classification (not implemented yet; missing DMP memory config + packet parsing. PRs welcome.)
         // const ACTIVITY_CLASSIFICATION  = 1 << 15;
     }
 }

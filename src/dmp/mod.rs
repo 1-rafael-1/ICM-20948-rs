@@ -19,6 +19,9 @@
 //! - **Geomagnetic Rotation Vector**: 9-axis orientation with heading accuracy
 //! - **Activity recognition**: Step detection, tap detection (if configured)
 //!
+//! **Note:** Activity recognition, pickup/tilt, and significant motion flags are exposed but not implemented yet.
+//! Missing pieces: DMP memory configuration writes and packet parsing for event payloads. PRs welcome.
+//!
 //! ## Usage Example
 //!
 //! ```ignore
@@ -119,16 +122,16 @@ pub struct DmpConfig {
     /// Enable pedometer step counter (tracks total steps)
     pub step_counter: bool,
 
-    // /// Enable significant motion detection (triggers on significant movement)
+    // /// Enable significant motion detection (not implemented yet)
     // pub significant_motion: bool,
 
-    // /// Enable tilt detector
+    // /// Enable tilt detector (not implemented yet)
     // pub tilt_detector: bool,
 
-    // /// Enable pickup/flip detector
+    // /// Enable pickup/flip detector (not implemented yet)
     // pub pickup_detector: bool,
 
-    // /// Enable activity classification (e.g., walk, run, bike, still)
+    // /// Enable activity classification (not implemented yet)
     // pub activity_classification: bool,
     /// DMP sample rate (Hz)
     /// Valid range depends on sensor configuration, typically 1-225 Hz
@@ -255,26 +258,26 @@ impl DmpConfig {
         self
     }
 
-    // /// Enable significant motion detection
-    // pub fn with_significant_motion(mut self, enable: bool) -> Self {
+    // /// Enable significant motion detection (not implemented yet)
+    // pub const fn with_significant_motion(mut self, enable: bool) -> Self {
     //     self.significant_motion = enable;
     //     self
     // }
 
-    // /// Enable tilt detector
-    // pub fn with_tilt_detector(mut self, enable: bool) -> Self {
+    // /// Enable tilt detector (not implemented yet)
+    // pub const fn with_tilt_detector(mut self, enable: bool) -> Self {
     //     self.tilt_detector = enable;
     //     self
     // }
 
-    // /// Enable pickup/flip detector
-    // pub fn with_pickup_detector(mut self, enable: bool) -> Self {
+    // /// Enable pickup/flip detector (not implemented yet)
+    // pub const fn with_pickup_detector(mut self, enable: bool) -> Self {
     //     self.pickup_detector = enable;
     //     self
     // }
 
-    // /// Enable activity classification
-    // pub fn with_activity_classification(mut self, enable: bool) -> Self {
+    // /// Enable activity classification (not implemented yet)
+    // pub const fn with_activity_classification(mut self, enable: bool) -> Self {
     //     self.activity_classification = enable;
     //     self
     // }
