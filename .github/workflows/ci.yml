@@ -117,6 +117,9 @@ jobs:
       - name: Run async tests
         run: cargo test --test async_tests --features std,async
 
+      - name: Run driver tests (blocking API, DMP enabled)
+        run: cargo test --test driver_tests --features std,dmp
+
   # Check documentation builds
   docs:
     name: Documentation
