@@ -78,6 +78,8 @@ pub enum Error<E> {
     InvalidConfig,
     /// Magnetometer error
     Magnetometer,
+    /// Magnetometer not initialized (call `init_magnetometer()` or `dmp_init_magnetometer()` first)
+    MagnetometerNotInitialized,
     /// Device is moving during calibration (variance exceeds threshold)
     DeviceMoving,
     /// Calibration overflow (averaged samples exceed i16 range)

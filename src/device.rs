@@ -1055,6 +1055,8 @@ where
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
     /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
+    /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
+    /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
     ///
     /// # Arguments
     ///
@@ -1090,6 +1092,15 @@ where
         #[cfg(feature = "dmp")]
         if !self.dmp_firmware_loaded {
             return Err(Error::DmpFirmwareNotLoaded);
+        }
+
+        if (config.quaternion_9axis
+            || config.geomag_rotation_vector
+            || config.raw_mag
+            || config.calibrated_mag)
+            && !self.mag_initialized
+        {
+            return Err(Error::MagnetometerNotInitialized);
         }
 
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
@@ -6064,6 +6075,8 @@ where
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
     /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
+    /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
+    /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
     ///
     /// # Arguments
     ///
@@ -6103,6 +6116,15 @@ where
         #[cfg(feature = "dmp")]
         if !self.dmp_firmware_loaded {
             return Err(Error::DmpFirmwareNotLoaded);
+        }
+
+        if (config.quaternion_9axis
+            || config.geomag_rotation_vector
+            || config.raw_mag
+            || config.calibrated_mag)
+            && !self.mag_initialized
+        {
+            return Err(Error::MagnetometerNotInitialized);
         }
 
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
