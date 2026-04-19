@@ -95,8 +95,8 @@ pub struct DmpConfig {
     /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
     pub geomag_rotation_vector: bool,
 
-    /// Enable calibrated accelerometer output
-    pub calibrated_accel: bool,
+    /// Enable host-calibrated accelerometer output
+    pub host_calibrated_accel: bool,
 
     /// Enable calibrated gyroscope output
     pub calibrated_gyro: bool,
@@ -142,7 +142,7 @@ impl Default for DmpConfig {
             quaternion_p6axis: false,
             quaternion_9axis: true, // Most common use case
             geomag_rotation_vector: false,
-            calibrated_accel: false,
+            host_calibrated_accel: false,
             calibrated_gyro: false,
             calibrated_mag: false,
             raw_accel: false,
@@ -167,7 +167,7 @@ impl DmpConfig {
             quaternion_p6axis: false,
             quaternion_9axis: false,
             geomag_rotation_vector: false,
-            calibrated_accel: false,
+            host_calibrated_accel: false,
             calibrated_gyro: false,
             calibrated_mag: false,
             raw_accel: false,
@@ -213,9 +213,9 @@ impl DmpConfig {
         self
     }
 
-    /// Enable calibrated accelerometer output
-    pub const fn with_calibrated_accel(mut self, enable: bool) -> Self {
-        self.calibrated_accel = enable;
+    /// Enable host-calibrated accelerometer output
+    pub const fn with_host_calibrated_accel(mut self, enable: bool) -> Self {
+        self.host_calibrated_accel = enable;
         self
     }
 
@@ -400,8 +400,8 @@ pub struct DmpData {
     /// Heading accuracy (for 9-axis quaternion)
     pub heading_accuracy: Option<f32>,
 
-    /// Calibrated accelerometer data
-    pub calibrated_accel: Option<(i16, i16, i16)>,
+    /// Host-calibrated accelerometer data
+    pub host_calibrated_accel: Option<(i16, i16, i16)>,
 
     /// Calibrated gyroscope data (raw - bias from DMP raw gyro stream)
     pub calibrated_gyro: Option<(i16, i16, i16)>,
@@ -453,10 +453,12 @@ mod tests {
     fn test_dmp_config_builder() {
         let config = DmpConfig::new()
             .with_quaternion_6axis(true)
+            .with_host_calibrated_accel(true)
             .with_calibrated_gyro(true)
             .with_sample_rate(200);
 
         assert!(config.quaternion_6axis);
+        assert!(config.host_calibrated_accel);
         assert!(config.calibrated_gyro);
         assert_eq!(config.sample_rate, 200);
         assert!(!config.quaternion_9axis); // Should not be enabled

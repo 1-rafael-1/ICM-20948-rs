@@ -422,8 +422,8 @@ bitflags::bitflags! {
         const QUATERNION_9AXIS       = 1 << 2;
         /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
         const GEOMAG_ROTATION_VECTOR = 1 << 3;
-        /// Enable calibrated accelerometer output
-        const CALIBRATED_ACCEL       = 1 << 4;
+        /// Enable host-calibrated accelerometer output
+        const HOST_CALIBRATED_ACCEL  = 1 << 4;
         /// Enable calibrated gyroscope output
         const CALIBRATED_GYRO        = 1 << 5;
         /// Enable calibrated magnetometer output
@@ -489,7 +489,7 @@ impl DmpFeatures {
     /// Convert logical features to `DATA_OUT_CTL2` (Accuracy Reporting)
     pub fn as_control2(&self) -> DmpControl2Flags {
         let mut c2 = DmpControl2Flags::empty();
-        if self.intersects(Self::RAW_ACCEL | Self::CALIBRATED_ACCEL) {
+        if self.intersects(Self::RAW_ACCEL | Self::HOST_CALIBRATED_ACCEL) {
             c2.insert(DmpControl2Flags::ACCEL_ACCURACY);
         }
 
@@ -529,7 +529,7 @@ impl DmpFeatures {
         // Map base physical outputs
         // Note: Linear acceleration is derived from raw accel and gravity in the driver/host,
         // so we must put RAW_ACCEL into the FIFO if linear_acceleration is requested.
-        if self.intersects(Self::RAW_ACCEL | Self::CALIBRATED_ACCEL) {
+        if self.intersects(Self::RAW_ACCEL | Self::HOST_CALIBRATED_ACCEL) {
             c1.insert(DmpControl1Flags::ACCEL);
         }
         if self.intersects(Self::RAW_GYRO) {
@@ -560,7 +560,7 @@ impl DmpFeatures {
                 Self::RAW_ACCEL
                     | Self::RAW_GYRO
                     | Self::RAW_MAG
-                    | Self::CALIBRATED_ACCEL
+                    | Self::HOST_CALIBRATED_ACCEL
                     | Self::CALIBRATED_GYRO
                     | Self::CALIBRATED_MAG,
             )
@@ -579,7 +579,7 @@ impl DmpFeatures {
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_ACCEL
-                | Self::CALIBRATED_ACCEL
+                | Self::HOST_CALIBRATED_ACCEL
                 | Self::STEP_DETECTOR
                 | Self::STEP_COUNTER,
         ) {
@@ -614,7 +614,7 @@ impl DmpFeatures {
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_ACCEL
-                | Self::CALIBRATED_ACCEL,
+                | Self::HOST_CALIBRATED_ACCEL,
         ) {
             me.insert(DmpMotionEventControl::ACCEL_CALIBR);
         }
@@ -959,7 +959,7 @@ impl DmpConfig {
             geomag_enabled = false;
         }
 
-        if self.calibrated_accel {
+        if self.host_calibrated_accel {
             #[cfg(feature = "defmt")]
             defmt::info!(
                 "DmpConfig Conflict: DMP only outputs Raw Accel + Accuracy. Host handles calibration."
@@ -978,8 +978,8 @@ impl DmpConfig {
         if self.quaternion_p6axis {
             f.insert(DmpFeatures::QUATERNION_P6AXIS);
         }
-        if self.calibrated_accel {
-            f.insert(DmpFeatures::CALIBRATED_ACCEL);
+        if self.host_calibrated_accel {
+            f.insert(DmpFeatures::HOST_CALIBRATED_ACCEL);
         }
         if self.calibrated_gyro {
             f.insert(DmpFeatures::CALIBRATED_GYRO);
@@ -1430,12 +1430,12 @@ mod tests {
     fn test_packet_size_with_sensors() {
         let config = DmpConfig::new()
             .with_quaternion_6axis(true)
-            .with_calibrated_accel(true)
+            .with_host_calibrated_accel(true)
             .with_calibrated_gyro(true);
         let size = config.packet_size();
         let expected = DmpPacketSize::HEADER
             + DmpPacketSize::QUAT6
-            + DmpPacketSize::ACCEL_COMPASS  // raw accel (6 bytes) for calibrated_accel
+            + DmpPacketSize::ACCEL_COMPASS  // raw accel (6 bytes) for host_calibrated_accel
             + DmpPacketSize::CAL_GYRO
             + DmpPacketSize::FOOTER;
         assert_eq!(size, expected);

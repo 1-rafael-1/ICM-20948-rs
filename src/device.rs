@@ -1339,7 +1339,7 @@ where
         {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
             return Ok(Some(data));
         } else {
@@ -6409,7 +6409,7 @@ where
         {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
             Ok(Some(data))
         } else {

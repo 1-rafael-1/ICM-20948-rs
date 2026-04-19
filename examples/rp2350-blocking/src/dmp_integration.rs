@@ -93,7 +93,7 @@ async fn main(_spawner: Spawner) {
 
     let dmp_config = DmpConfig::new()
         .with_quaternion_9axis(true)
-        .with_calibrated_accel(true)
+        .with_host_calibrated_accel(true)
         .with_raw_accel(true)
         .with_sample_rate(dmp_sample_rate_hz);
 
@@ -131,7 +131,7 @@ async fn main(_spawner: Spawner) {
                     yaw += 360.0;
                 }
 
-                if let Some(accel) = packet.calibrated_accel {
+                if let Some(accel) = packet.host_calibrated_accel {
                     let ax_g = accel.0 as f32 / 8192.0;
                     let ay_g = accel.1 as f32 / 8192.0;
 
