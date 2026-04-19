@@ -11,6 +11,7 @@ mod unit {
     mod calibration;
     mod config_validation;
     mod data_integrity;
+    mod dmp;
     mod error_handling;
     mod gyro_calibration;
     mod magnetometer;
