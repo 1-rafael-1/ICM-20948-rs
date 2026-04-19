@@ -1253,6 +1253,7 @@ where
     ///
     /// # Errors
     ///
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     ///
     /// # Example
@@ -1273,6 +1274,12 @@ where
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
         use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+
+        let overflow = self.fifo_overflow_status()?;
+        if overflow.any_overflow() {
+            self.reset_fifo()?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Check FIFO count
         let count = self.read_fifo_count()?;
@@ -1944,9 +1951,16 @@ where
     /// Number of bytes actually read (limited by available data and buffer size)
     ///
     /// # Errors
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     pub fn fifo_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        let overflow = self.fifo_overflow_status()?;
+        if overflow.any_overflow() {
+            self.fifo_reset()?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Read FIFO count ONCE before reading to avoid race conditions
         // and reduce overhead (checking count after every byte adds 2 register reads per byte!)
@@ -5235,9 +5249,16 @@ where
     /// Number of bytes actually read (limited by available data and buffer size)
     ///
     /// # Errors
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     pub async fn fifo_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        let overflow = self.fifo_overflow_status().await?;
+        if overflow.any_overflow() {
+            self.fifo_reset().await?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Read FIFO count ONCE before reading to avoid race conditions
         // and reduce overhead (checking count after every byte adds 2 register reads per byte!)
@@ -6290,6 +6311,7 @@ where
     ///
     /// # Errors
     ///
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     ///
     /// # Example
@@ -6310,6 +6332,12 @@ where
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
         use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+
+        let overflow = self.fifo_overflow_status().await?;
+        if overflow.any_overflow() {
+            self.reset_fifo().await?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Check FIFO count
         let count = self.read_fifo_count().await?;
