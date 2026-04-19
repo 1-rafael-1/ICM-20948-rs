@@ -74,6 +74,10 @@ pub struct Icm20948Driver<I> {
     mag_initialized: bool,
 
     #[cfg(feature = "dmp")]
+    dmp_firmware_loaded: bool,
+    #[cfg(feature = "dmp")]
+    dmp_configured: bool,
+    #[cfg(feature = "dmp")]
     dmp_packet_size: usize,
 }
 
@@ -104,6 +108,10 @@ where
             mag_calibration: crate::sensors::MagCalibration::default(),
             mag_initialized: false,
 
+            #[cfg(feature = "dmp")]
+            dmp_firmware_loaded: false,
+            #[cfg(feature = "dmp")]
+            dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
         };
@@ -376,6 +384,17 @@ where
     /// Returns an error if communication with the device fails.
     pub fn set_dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
+
         self.device.user_ctrl().modify(|w| {
             w.set_dmp_en(enable);
         })?;
@@ -551,6 +570,12 @@ where
             "Applied DMP hardware fix registers (HW_FIX_DISABLE=0x48, SINGLE_FIFO_PRIORITY_SEL=0xE4)"
         );
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = true;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -684,6 +709,12 @@ where
             w.set_dmp_rst(true);
         })?;
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = false;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -691,6 +722,7 @@ where
     /// Enable or disable the DMP processor
     ///
     /// The firmware must already be loaded before enabling the DMP.
+    /// Configure the DMP before enabling it (call `dmp_configure()`).
     /// Use `dmp_init()` or `dmp_load_firmware()` first.
     ///
     /// When enabled, the DMP processes sensor data and writes results to the FIFO.
@@ -725,6 +757,16 @@ where
     /// ```
     pub fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
 
         // If enabling, verify power management settings first
         if enable {
@@ -1012,7 +1054,7 @@ where
     /// calibrated sensor data, and sample rates.
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
-    /// `dmp_load_firmware()`.
+    /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
     ///
     /// # Arguments
     ///
@@ -1044,6 +1086,12 @@ where
     /// ```
     pub fn dmp_configure(&mut self, config: &crate::dmp::DmpConfig) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
+
+        #[cfg(feature = "dmp")]
+        if !self.dmp_firmware_loaded {
+            return Err(Error::DmpFirmwareNotLoaded);
+        }
+
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
         // The DMP needs continuous magnetometer data to run 9-axis fusion
         // Disabling I2C master causes the DMP to stop producing output
@@ -1103,6 +1151,11 @@ where
         }
 
         self.dmp_packet_size = config.packet_size();
+
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_configured = true;
+        }
 
         Ok(())
     }
@@ -4181,6 +4234,10 @@ where
             mag_initialized: false,
 
             #[cfg(feature = "dmp")]
+            dmp_firmware_loaded: false,
+            #[cfg(feature = "dmp")]
+            dmp_configured: false,
+            #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
         };
 
@@ -4520,6 +4577,17 @@ where
     /// Returns an error if communication with the device fails.
     pub async fn set_dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
+
         self.device
             .user_ctrl()
             .modify_async(|w| {
@@ -5364,6 +5432,12 @@ where
             "Applied DMP hardware fix registers (HW_FIX_DISABLE=0x48, SINGLE_FIFO_PRIORITY_SEL=0xE4)"
         );
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = true;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -5540,12 +5614,19 @@ where
             })
             .await?;
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = false;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
     /// Enable or disable the DMP processor
     ///
     /// The firmware must already be loaded before enabling the DMP.
+    /// Configure the DMP before enabling it (call `dmp_configure()`).
     /// Use `dmp_init()` or `dmp_load_firmware()` first.
     ///
     /// When enabled, the DMP will process sensor data and write results to the FIFO.
@@ -5578,6 +5659,16 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
 
         // If enabling, verify power management settings first
         if enable {
@@ -5951,7 +6042,7 @@ where
     /// calibrated sensor data, and sample rates.
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
-    /// `dmp_load_firmware()`.
+    /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
     ///
     /// # Arguments
     ///
@@ -5987,6 +6078,12 @@ where
         config: &crate::dmp::DmpConfig,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
+
+        #[cfg(feature = "dmp")]
+        if !self.dmp_firmware_loaded {
+            return Err(Error::DmpFirmwareNotLoaded);
+        }
+
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
         // The DMP needs continuous magnetometer data to run 9-axis fusion
         // Disabling I2C master causes the DMP to stop producing output
@@ -6063,6 +6160,11 @@ where
         }
 
         self.dmp_packet_size = config.packet_size();
+
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_configured = true;
+        }
 
         Ok(())
     }

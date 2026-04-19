@@ -84,6 +84,10 @@ pub enum Error<E> {
     CalibrationOverflow,
     /// FIFO buffer overflow - more records than can fit in output vector (max 64)
     FifoOverflow,
+    /// DMP firmware not loaded (call `dmp_init` or `dmp_load_firmware` first)
+    DmpFirmwareNotLoaded,
+    /// DMP not configured (call `dmp_configure` before enabling)
+    DmpNotConfigured,
     /// Initialization timed out (device did not reset or wake as expected)
     InitializationTimeout,
 }
