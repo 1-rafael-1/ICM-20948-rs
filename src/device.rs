@@ -1153,14 +1153,11 @@ where
             let remaining = data.len() - bytes_written;
             let chunk_size = remaining.min(MAX_CHUNK_SIZE);
 
-            // Write chunk bytes (address auto-increments)
-            // for i in 0..chunk_size {
-            //     let byte = data[bytes_written + i];
-            //     self.device.mem_rw().write(|w| {
-            //         w.set_mem_r_w(byte);
-            //     })?;
-            // }
-            self.device.interface.write_register(0x7D, 8, data)?;
+            self.device.interface.write_register(
+                0x7D,
+                8,
+                &data[bytes_written..bytes_written + chunk_size],
+            )?;
 
             #[cfg(feature = "defmt")]
             {
