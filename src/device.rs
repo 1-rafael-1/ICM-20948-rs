@@ -1288,7 +1288,7 @@ where
 
         let overflow = self.fifo_overflow_status()?;
         if overflow.any_overflow() {
-            self.reset_fifo()?;
+            self.fifo_reset()?;
             return Err(Error::FifoOverflow);
         }
 
@@ -6357,7 +6357,7 @@ where
 
         let overflow = self.fifo_overflow_status().await?;
         if overflow.any_overflow() {
-            self.reset_fifo().await?;
+            self.fifo_reset().await?;
             return Err(Error::FifoOverflow);
         }
 
