@@ -203,9 +203,8 @@ All tests run automatically on every push and pull request.
 ### Known Non-Functional Features ⚠️
 **Digital Motion Processor (DMP):**
 - Firmware loading implementation exists (behind `dmp` feature flag)
-- **Status:** Awaiting data verification; API not yet stable
-- **Recommendation:** Use software sensor fusion (see `ahrs_euler.rs` example) instead
-- DMP code remains in codebase for reference only
+- **Status:** Awaiting data verification; API not yet stable. Basic DMP is working but not all capabilities supported yet
+- **Recommendation:** Use software sensor fusion (see `ahrs_euler.rs` example) instead until stabilized
 
 ## Documentation
 
