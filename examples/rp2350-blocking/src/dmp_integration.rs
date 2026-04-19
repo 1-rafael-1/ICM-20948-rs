@@ -98,7 +98,7 @@ async fn main(_spawner: Spawner) {
         .with_sample_rate(dmp_sample_rate_hz);
 
     imu.dmp_configure(&dmp_config).unwrap();
-    imu.set_dmp_enable(true).unwrap();
+    imu.dmp_enable(true).unwrap();
     imu.reset_fifo().unwrap();
 
     info!("Entering DMP read loop...");

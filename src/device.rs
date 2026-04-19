@@ -723,7 +723,7 @@ where
     /// // Now DMP is running and writing data to FIFO
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub async fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
+    pub fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
 
         // If enabling, verify power management settings first
