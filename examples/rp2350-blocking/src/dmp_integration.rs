@@ -26,7 +26,7 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Duration, Instant};
-use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
+use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
 use panic_probe as _;
 
 /// Firmware image type for bootloader
@@ -161,7 +161,7 @@ async fn main(_spawner: Spawner) {
                     vel_y *= 0.95;
                 }
 
-                if sample_count % 10 == 0 {
+                if sample_count.is_multiple_of(100) {
                     let now = Instant::now();
                     let diff_micros = (now - last_print_time).as_micros() as f32;
                     let fps = if diff_micros > 0.0 {
