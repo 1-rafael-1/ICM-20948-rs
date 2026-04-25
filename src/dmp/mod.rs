@@ -19,6 +19,9 @@
 //! - **Geomagnetic Rotation Vector**: 9-axis orientation with heading accuracy
 //! - **Activity recognition**: Step detection, tap detection (if configured)
 //!
+//! **Note:** Activity recognition, pickup/tilt, and significant motion flags are exposed but not implemented yet.
+//! Missing pieces: DMP memory configuration writes and packet parsing for event payloads. PRs welcome.
+//!
 //! ## Usage Example
 //!
 //! ```ignore
@@ -95,8 +98,8 @@ pub struct DmpConfig {
     /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
     pub geomag_rotation_vector: bool,
 
-    /// Enable calibrated accelerometer output
-    pub calibrated_accel: bool,
+    /// Enable host-calibrated accelerometer output
+    pub host_calibrated_accel: bool,
 
     /// Enable calibrated gyroscope output
     pub calibrated_gyro: bool,
@@ -119,16 +122,16 @@ pub struct DmpConfig {
     /// Enable pedometer step counter (tracks total steps)
     pub step_counter: bool,
 
-    // /// Enable significant motion detection (triggers on significant movement)
+    // /// Enable significant motion detection (not implemented yet)
     // pub significant_motion: bool,
 
-    // /// Enable tilt detector
+    // /// Enable tilt detector (not implemented yet)
     // pub tilt_detector: bool,
 
-    // /// Enable pickup/flip detector
+    // /// Enable pickup/flip detector (not implemented yet)
     // pub pickup_detector: bool,
 
-    // /// Enable activity classification (e.g., walk, run, bike, still)
+    // /// Enable activity classification (not implemented yet)
     // pub activity_classification: bool,
     /// DMP sample rate (Hz)
     /// Valid range depends on sensor configuration, typically 1-225 Hz
@@ -142,7 +145,7 @@ impl Default for DmpConfig {
             quaternion_p6axis: false,
             quaternion_9axis: true, // Most common use case
             geomag_rotation_vector: false,
-            calibrated_accel: false,
+            host_calibrated_accel: false,
             calibrated_gyro: false,
             calibrated_mag: false,
             raw_accel: false,
@@ -167,7 +170,7 @@ impl DmpConfig {
             quaternion_p6axis: false,
             quaternion_9axis: false,
             geomag_rotation_vector: false,
-            calibrated_accel: false,
+            host_calibrated_accel: false,
             calibrated_gyro: false,
             calibrated_mag: false,
             raw_accel: false,
@@ -213,9 +216,9 @@ impl DmpConfig {
         self
     }
 
-    /// Enable calibrated accelerometer output
-    pub const fn with_calibrated_accel(mut self, enable: bool) -> Self {
-        self.calibrated_accel = enable;
+    /// Enable host-calibrated accelerometer output
+    pub const fn with_host_calibrated_accel(mut self, enable: bool) -> Self {
+        self.host_calibrated_accel = enable;
         self
     }
 
@@ -255,26 +258,26 @@ impl DmpConfig {
         self
     }
 
-    // /// Enable significant motion detection
-    // pub fn with_significant_motion(mut self, enable: bool) -> Self {
+    // /// Enable significant motion detection (not implemented yet)
+    // pub const fn with_significant_motion(mut self, enable: bool) -> Self {
     //     self.significant_motion = enable;
     //     self
     // }
 
-    // /// Enable tilt detector
-    // pub fn with_tilt_detector(mut self, enable: bool) -> Self {
+    // /// Enable tilt detector (not implemented yet)
+    // pub const fn with_tilt_detector(mut self, enable: bool) -> Self {
     //     self.tilt_detector = enable;
     //     self
     // }
 
-    // /// Enable pickup/flip detector
-    // pub fn with_pickup_detector(mut self, enable: bool) -> Self {
+    // /// Enable pickup/flip detector (not implemented yet)
+    // pub const fn with_pickup_detector(mut self, enable: bool) -> Self {
     //     self.pickup_detector = enable;
     //     self
     // }
 
-    // /// Enable activity classification
-    // pub fn with_activity_classification(mut self, enable: bool) -> Self {
+    // /// Enable activity classification (not implemented yet)
+    // pub const fn with_activity_classification(mut self, enable: bool) -> Self {
     //     self.activity_classification = enable;
     //     self
     // }
@@ -400,11 +403,14 @@ pub struct DmpData {
     /// Heading accuracy (for 9-axis quaternion)
     pub heading_accuracy: Option<f32>,
 
-    /// Calibrated accelerometer data
-    pub calibrated_accel: Option<(i16, i16, i16)>,
+    /// Host-calibrated accelerometer data
+    pub host_calibrated_accel: Option<(i16, i16, i16)>,
 
-    /// Calibrated gyroscope data
+    /// Calibrated gyroscope data (raw - bias from DMP raw gyro stream)
     pub calibrated_gyro: Option<(i16, i16, i16)>,
+
+    /// Calibrated gyroscope data from DMP (32-bit values)
+    pub dmp_calibrated_gyro: Option<(i32, i32, i32)>,
 
     /// Calibrated magnetometer data
     pub calibrated_mag: Option<(i32, i32, i32)>,
@@ -450,10 +456,12 @@ mod tests {
     fn test_dmp_config_builder() {
         let config = DmpConfig::new()
             .with_quaternion_6axis(true)
+            .with_host_calibrated_accel(true)
             .with_calibrated_gyro(true)
             .with_sample_rate(200);
 
         assert!(config.quaternion_6axis);
+        assert!(config.host_calibrated_accel);
         assert!(config.calibrated_gyro);
         assert_eq!(config.sample_rate, 200);
         assert!(!config.quaternion_9axis); // Should not be enabled

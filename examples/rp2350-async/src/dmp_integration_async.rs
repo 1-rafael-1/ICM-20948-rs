@@ -1,51 +1,77 @@
+//! DMP Integration Example for ICM-20948 on Raspberry Pi Pico 2 (Async version)
+//!
+//! This example demonstrates loading the DMP firmware, configuring quaternion output,
+//! and reading DMP FIFO packets using the INT1 pin for interrupts.
+//!
+//! Hardware connections (I2C0):
+//! - SDA: GPIO12
+//! - SCL: GPIO13
+//! - VCC: 3.3V
+//! - GND: GND
+//! - AD0: GND (for address 0x68)
+//! - INT1: GPIO14
+
 #![no_std]
 #![no_main]
 
-use defmt::info;
-use {defmt_rtt as _, panic_probe as _};
-
+use defmt::{error, info};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::{
+use embassy_rp::{
     bind_interrupts,
-    exti::ExtiInput,
-    gpio::{Level, Output, Pull, Speed},
-    spi::{Config as SpiConfig, Spi},
+    block::ImageDef,
+    config::Config,
+    gpio::{Input, Pull},
+    i2c::{Config as I2cConfig, I2c, InterruptHandler as I2cInterruptHandler},
+    peripherals::I2C0,
 };
-use embassy_time::{Delay, Instant};
-use embedded_hal_bus::spi::ExclusiveDevice;
-use icm20948::{Icm20948Driver, InterruptConfig, InterruptPinConfig, SpiInterface, dmp::DmpConfig};
+use embassy_time::{Delay, Instant, Timer};
+use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
+use panic_probe as _;
 
-bind_interrupts!(struct SpiIrqs {
-    DMA1_CHANNEL5 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH5>;
-    DMA1_CHANNEL4 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH4>;
-    EXTI3 =>  embassy_stm32::exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI3>;
+/// Firmware image type for bootloader
+#[link_section = ".start_block"]
+#[used]
+pub static IMAGE_DEF: ImageDef = ImageDef::secure_exe();
+
+// Bind I2C interrupts
+bind_interrupts!(struct Irqs {
+    I2C0_IRQ => I2cInterruptHandler<I2C0>;
 });
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
-    info!("Starting Data-Ready interrupt data collection test...");
+    info!("Starting DMP integration example (RP2350 async)...");
 
-    let mut spi_config = SpiConfig::default();
-    // spi_config.frequency = Hertz(5_000_000);
-    spi_config.mode = embassy_stm32::spi::MODE_0;
+    let p = embassy_rp::init(Config::default());
 
-    let spi_bus = Spi::new(
-        p.SPI2, p.PB13, p.PB15, p.PB14, p.DMA1_CH5, p.DMA1_CH4, SpiIrqs, spi_config,
-    );
-    let cs_pin = Output::new(p.PA2, Level::High, Speed::VeryHigh);
-    let spi_device = ExclusiveDevice::new(spi_bus, cs_pin, Delay).unwrap();
+    // Configure I2C at 400kHz
+    let mut i2c_config = I2cConfig::default();
+    i2c_config.frequency = 400_000;
+    let i2c = I2c::new_async(p.I2C0, p.PIN_13, p.PIN_12, Irqs, i2c_config);
 
-    let mut imu_int = ExtiInput::new(p.PA3, p.EXTI3, Pull::Down, SpiIrqs);
+    let mut imu_int = Input::new(p.PIN_14, Pull::Down);
 
-    let mut imu = Icm20948Driver::new(SpiInterface::new(spi_device))
-        .await
-        .unwrap();
+    let i2c_interface = I2cInterface::default(i2c);
+    let mut imu = match Icm20948Driver::new(i2c_interface).await {
+        Ok(imu) => imu,
+        Err(e) => {
+            error!("IMU initialization failed: {:?}", e);
+            loop {
+                Timer::after_millis(1000).await;
+            }
+        }
+    };
 
     let mut delay = Delay;
-    imu.init(&mut delay).await.unwrap();
+    if let Err(e) = imu.init(&mut delay).await {
+        error!("Failed to initialize ICM-20948: {:?}", e);
+        loop {
+            Timer::after_millis(1000).await;
+        }
+    }
 
-    imu.enable_spi_mode().await.unwrap();
+    Timer::after_millis(50).await;
 
     let int_pin_cfg = InterruptPinConfig {
         active_low: false,
@@ -59,7 +85,7 @@ async fn main(_spawner: Spawner) {
     int_cfg.dmp = true;
     imu.configure_interrupts(&int_cfg).await.unwrap();
 
-    info!("Loading DMP Firmware and configuring...");
+    info!("Loading DMP firmware and configuring...");
     imu.dmp_init(&mut delay).await.unwrap();
     imu.dmp_init_magnetometer(&mut delay).await.unwrap();
 
@@ -72,11 +98,10 @@ async fn main(_spawner: Spawner) {
         .with_sample_rate(dmp_sample_rate_hz);
 
     imu.dmp_configure(&dmp_config).await.unwrap();
-
     imu.dmp_enable(true).await.unwrap();
     imu.reset_fifo().await.unwrap();
 
-    info!("Entering 6/9-Axis DMP read loop...");
+    info!("Entering DMP read loop...");
 
     let mut sample_count = 0u32;
     let mut last_print_time = Instant::now();
@@ -109,7 +134,6 @@ async fn main(_spawner: Spawner) {
                 if let Some(accel) = packet.host_calibrated_accel {
                     let ax_g = accel.0 as f32 / 8192.0;
                     let ay_g = accel.1 as f32 / 8192.0;
-                    // let az_g = accel.2 as f32 / 8192.0;
 
                     let gravity_x = 2.0 * (quat.x * quat.z - quat.w * quat.y);
                     let gravity_y = 2.0 * (quat.w * quat.x + quat.y * quat.z);
@@ -137,7 +161,7 @@ async fn main(_spawner: Spawner) {
                     vel_y *= 0.95;
                 }
 
-                if sample_count % 10 == 0 {
+                if sample_count.is_multiple_of(100) {
                     let now = Instant::now();
                     let diff_micros = (now - last_print_time).as_micros() as f32;
                     let fps = if diff_micros > 0.0 {

@@ -4,7 +4,7 @@ This directory contains async examples for using the ICM-20948 9-axis IMU with t
 
 **For blocking examples**, see the `../rp2350-blocking` directory.
 
-**Note:** Examples for interrupts and DMP have been removed as these features are not functional in hardware.
+**Note:** Interrupt, Wake-on-Motion, and DMP examples are included. The DMP example requires enabling the `dmp` feature when building or running.
 
 ## Hardware Requirements
 
@@ -25,6 +25,7 @@ GND          →    GND (Pin 38)
 SDA          →    GP12 (Pin 16) - I2C0 SDA
 SCL          →    GP13 (Pin 17) - I2C0 SCL
 AD0          →    GND (for I2C address 0x68)
+INT1         →    GP14 (Pin 19) - Interrupt line
 ```
 
 **Note**: The AD0 pin determines the I2C address (GND = 0x68, VCC = 0x69).
@@ -64,6 +65,9 @@ Each example includes documentation in its source file. Check the file's doc com
 - **`fifo_batch_async`** - FIFO batch reading
 - **`fifo_data_validation_async`** - FIFO data validation and testing
 - **`low_power_mode_async`** - Low-power mode demonstration with power consumption measurement
+- **`hardware_interrupt_async`** - Data-ready interrupt driven sampling (INT1)
+- **`wake_on_motion_async`** - Wake-on-Motion with INT1 trigger
+- **`dmp_integration_async`** - DMP firmware load and FIFO parsing (requires `dmp` feature)
 
 ### Sensor Fusion
 
@@ -81,6 +85,9 @@ cargo run --release --bin sample_rate_test_async
 cargo run --release --bin fifo_batch_async
 cargo run --release --bin fifo_data_validation_async
 cargo run --release --bin low_power_mode_async
+cargo run --release --bin hardware_interrupt_async
+cargo run --release --bin wake_on_motion_async
+cargo run --release --bin dmp_integration_async --features dmp
 ```
 
 ## Troubleshooting

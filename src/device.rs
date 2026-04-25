@@ -74,6 +74,10 @@ pub struct Icm20948Driver<I> {
     mag_initialized: bool,
 
     #[cfg(feature = "dmp")]
+    dmp_firmware_loaded: bool,
+    #[cfg(feature = "dmp")]
+    dmp_configured: bool,
+    #[cfg(feature = "dmp")]
     dmp_packet_size: usize,
 }
 
@@ -104,6 +108,10 @@ where
             mag_calibration: crate::sensors::MagCalibration::default(),
             mag_initialized: false,
 
+            #[cfg(feature = "dmp")]
+            dmp_firmware_loaded: false,
+            #[cfg(feature = "dmp")]
+            dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
         };
@@ -376,6 +384,17 @@ where
     /// Returns an error if communication with the device fails.
     pub fn set_dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
+
         self.device.user_ctrl().modify(|w| {
             w.set_dmp_en(enable);
         })?;
@@ -551,6 +570,12 @@ where
             "Applied DMP hardware fix registers (HW_FIX_DISABLE=0x48, SINGLE_FIFO_PRIORITY_SEL=0xE4)"
         );
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = true;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -684,6 +709,12 @@ where
             w.set_dmp_rst(true);
         })?;
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = false;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -691,6 +722,7 @@ where
     /// Enable or disable the DMP processor
     ///
     /// The firmware must already be loaded before enabling the DMP.
+    /// Configure the DMP before enabling it (call `dmp_configure()`).
     /// Use `dmp_init()` or `dmp_load_firmware()` first.
     ///
     /// When enabled, the DMP processes sensor data and writes results to the FIFO.
@@ -723,8 +755,18 @@ where
     /// // Now DMP is running and writing data to FIFO
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub async fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
+    pub fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
 
         // If enabling, verify power management settings first
         if enable {
@@ -1012,7 +1054,9 @@ where
     /// calibrated sensor data, and sample rates.
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
-    /// `dmp_load_firmware()`.
+    /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
+    /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
+    /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
     ///
     /// # Arguments
     ///
@@ -1044,6 +1088,21 @@ where
     /// ```
     pub fn dmp_configure(&mut self, config: &crate::dmp::DmpConfig) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
+
+        #[cfg(feature = "dmp")]
+        if !self.dmp_firmware_loaded {
+            return Err(Error::DmpFirmwareNotLoaded);
+        }
+
+        if (config.quaternion_9axis
+            || config.geomag_rotation_vector
+            || config.raw_mag
+            || config.calibrated_mag)
+            && !self.mag_initialized
+        {
+            return Err(Error::MagnetometerNotInitialized);
+        }
+
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
         // The DMP needs continuous magnetometer data to run 9-axis fusion
         // Disabling I2C master causes the DMP to stop producing output
@@ -1104,6 +1163,11 @@ where
 
         self.dmp_packet_size = config.packet_size();
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_configured = true;
+        }
+
         Ok(())
     }
 
@@ -1153,14 +1217,11 @@ where
             let remaining = data.len() - bytes_written;
             let chunk_size = remaining.min(MAX_CHUNK_SIZE);
 
-            // Write chunk bytes (address auto-increments)
-            // for i in 0..chunk_size {
-            //     let byte = data[bytes_written + i];
-            //     self.device.mem_rw().write(|w| {
-            //         w.set_mem_r_w(byte);
-            //     })?;
-            // }
-            self.device.interface.write_register(0x7D, 8, data)?;
+            self.device.interface.write_register(
+                0x7D,
+                8,
+                &data[bytes_written..bytes_written + chunk_size],
+            )?;
 
             #[cfg(feature = "defmt")]
             {
@@ -1203,6 +1264,7 @@ where
     ///
     /// # Errors
     ///
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     ///
     /// # Example
@@ -1223,6 +1285,12 @@ where
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
         use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+
+        let overflow = self.fifo_overflow_status()?;
+        if overflow.any_overflow() {
+            self.fifo_reset()?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Check FIFO count
         let count = self.read_fifo_count()?;
@@ -1271,7 +1339,7 @@ where
         {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
             return Ok(Some(data));
         } else {
@@ -1894,9 +1962,16 @@ where
     /// Number of bytes actually read (limited by available data and buffer size)
     ///
     /// # Errors
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     pub fn fifo_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
+
+        let overflow = self.fifo_overflow_status()?;
+        if overflow.any_overflow() {
+            self.fifo_reset()?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Read FIFO count ONCE before reading to avoid race conditions
         // and reduce overhead (checking count after every byte adds 2 register reads per byte!)
@@ -4184,6 +4259,10 @@ where
             mag_initialized: false,
 
             #[cfg(feature = "dmp")]
+            dmp_firmware_loaded: false,
+            #[cfg(feature = "dmp")]
+            dmp_configured: false,
+            #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
         };
 
@@ -4523,6 +4602,17 @@ where
     /// Returns an error if communication with the device fails.
     pub async fn set_dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
+
         self.device
             .user_ctrl()
             .modify_async(|w| {
@@ -5170,9 +5260,16 @@ where
     /// Number of bytes actually read (limited by available data and buffer size)
     ///
     /// # Errors
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     pub async fn fifo_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        let overflow = self.fifo_overflow_status().await?;
+        if overflow.any_overflow() {
+            self.fifo_reset().await?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Read FIFO count ONCE before reading to avoid race conditions
         // and reduce overhead (checking count after every byte adds 2 register reads per byte!)
@@ -5367,6 +5464,12 @@ where
             "Applied DMP hardware fix registers (HW_FIX_DISABLE=0x48, SINGLE_FIFO_PRIORITY_SEL=0xE4)"
         );
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = true;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
@@ -5543,12 +5646,19 @@ where
             })
             .await?;
 
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_firmware_loaded = false;
+            self.dmp_configured = false;
+        }
+
         Ok(())
     }
 
     /// Enable or disable the DMP processor
     ///
     /// The firmware must already be loaded before enabling the DMP.
+    /// Configure the DMP before enabling it (call `dmp_configure()`).
     /// Use `dmp_init()` or `dmp_load_firmware()` first.
     ///
     /// When enabled, the DMP will process sensor data and write results to the FIFO.
@@ -5581,6 +5691,16 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0).await?;
+
+        #[cfg(feature = "dmp")]
+        if enable {
+            if !self.dmp_firmware_loaded {
+                return Err(Error::DmpFirmwareNotLoaded);
+            }
+            if !self.dmp_configured {
+                return Err(Error::DmpNotConfigured);
+            }
+        }
 
         // If enabling, verify power management settings first
         if enable {
@@ -5954,7 +6074,9 @@ where
     /// calibrated sensor data, and sample rates.
     ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
-    /// `dmp_load_firmware()`.
+    /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
+    /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
+    /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
     ///
     /// # Arguments
     ///
@@ -5990,6 +6112,21 @@ where
         config: &crate::dmp::DmpConfig,
     ) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::ConfigSequence;
+
+        #[cfg(feature = "dmp")]
+        if !self.dmp_firmware_loaded {
+            return Err(Error::DmpFirmwareNotLoaded);
+        }
+
+        if (config.quaternion_9axis
+            || config.geomag_rotation_vector
+            || config.raw_mag
+            || config.calibrated_mag)
+            && !self.mag_initialized
+        {
+            return Err(Error::MagnetometerNotInitialized);
+        }
+
         // NOTE: We do NOT disable I2C master during config for 9-axis mode
         // The DMP needs continuous magnetometer data to run 9-axis fusion
         // Disabling I2C master causes the DMP to stop producing output
@@ -6066,6 +6203,11 @@ where
         }
 
         self.dmp_packet_size = config.packet_size();
+
+        #[cfg(feature = "dmp")]
+        {
+            self.dmp_configured = true;
+        }
 
         Ok(())
     }
@@ -6191,6 +6333,7 @@ where
     ///
     /// # Errors
     ///
+    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
     /// Returns an error if communication with the device fails.
     ///
     /// # Example
@@ -6211,6 +6354,12 @@ where
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
         use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+
+        let overflow = self.fifo_overflow_status().await?;
+        if overflow.any_overflow() {
+            self.fifo_reset().await?;
+            return Err(Error::FifoOverflow);
+        }
 
         // Check FIFO count
         let count = self.read_fifo_count().await?;
@@ -6260,7 +6409,7 @@ where
         {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.calibrated_accel = Some((cal_x, cal_y, cal_z));
+                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
             Ok(Some(data))
         } else {

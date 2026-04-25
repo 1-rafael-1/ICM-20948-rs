@@ -78,12 +78,18 @@ pub enum Error<E> {
     InvalidConfig,
     /// Magnetometer error
     Magnetometer,
+    /// Magnetometer not initialized (call `init_magnetometer()` or `dmp_init_magnetometer()` first)
+    MagnetometerNotInitialized,
     /// Device is moving during calibration (variance exceeds threshold)
     DeviceMoving,
     /// Calibration overflow (averaged samples exceed i16 range)
     CalibrationOverflow,
     /// FIFO buffer overflow - more records than can fit in output vector (max 64)
     FifoOverflow,
+    /// DMP firmware not loaded (call `dmp_init` or `dmp_load_firmware` first)
+    DmpFirmwareNotLoaded,
+    /// DMP not configured (call `dmp_configure` before enabling)
+    DmpNotConfigured,
     /// Initialization timed out (device did not reset or wake as expected)
     InitializationTimeout,
 }

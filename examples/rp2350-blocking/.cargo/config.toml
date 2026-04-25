@@ -5,4 +5,5 @@ runner = "probe-rs run --chip RP235x --protocol swd --speed 16000"
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "debug"
+# DEFMT_LOG = "debug" # Use this to see debug and above log messages, can be noisy.
+DEFMT_LOG = "info" # Use this to see info and above log messages

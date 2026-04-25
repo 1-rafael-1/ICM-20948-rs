@@ -11,7 +11,6 @@ use embassy_stm32::{
     exti::ExtiInput,
     gpio::{Level, Output, Pull, Speed},
     spi::{Config as SpiConfig, Spi},
-    time::Hertz,
 };
 use embassy_time::{Delay, Timer};
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -106,3 +105,4 @@ async fn main(_spawner: Spawner) {
             }
         }
     }
+}

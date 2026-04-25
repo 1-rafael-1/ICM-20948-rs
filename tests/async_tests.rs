@@ -469,11 +469,46 @@ fn test_set_dmp_enable() {
             .await
             .expect("Failed to create driver");
 
-        // Enable DMP
-        assert!(imu.set_dmp_enable(true).await.is_ok());
+        #[cfg(feature = "dmp")]
+        {
+            // Enable without firmware should fail
+            assert!(matches!(
+                imu.set_dmp_enable(true).await,
+                Err(Error::DmpFirmwareNotLoaded)
+            ));
 
-        // Disable DMP
-        assert!(imu.set_dmp_enable(false).await.is_ok());
+            // Load firmware
+            let mut delay = MockDelay;
+            imu.dmp_load_firmware(&mut delay)
+                .await
+                .expect("Firmware load failed");
+
+            // Enable without configuration should fail
+            assert!(matches!(
+                imu.set_dmp_enable(true).await,
+                Err(Error::DmpNotConfigured)
+            ));
+
+            // Configure (6-axis, no magnetometer required)
+            let config = DmpConfig::new()
+                .with_quaternion_6axis(true)
+                .with_sample_rate(100);
+
+            imu.dmp_configure(&config)
+                .await
+                .expect("Failed to configure DMP");
+
+            // Enable/disable should now succeed
+            assert!(imu.set_dmp_enable(true).await.is_ok());
+            assert!(imu.set_dmp_enable(false).await.is_ok());
+        }
+
+        #[cfg(not(feature = "dmp"))]
+        {
+            // Without DMP feature, set_dmp_enable remains a simple register toggle
+            assert!(imu.set_dmp_enable(true).await.is_ok());
+            assert!(imu.set_dmp_enable(false).await.is_ok());
+        }
     });
 }
 
@@ -770,10 +805,35 @@ fn test_dmp_enable() {
             .await
             .expect("Failed to create driver");
 
-        // Enable DMP
-        assert!(imu.dmp_enable(true).await.is_ok());
+        // Enable without firmware should fail
+        assert!(matches!(
+            imu.dmp_enable(true).await,
+            Err(Error::DmpFirmwareNotLoaded)
+        ));
 
-        // Disable DMP
+        // Load firmware
+        let mut delay = MockDelay;
+        imu.dmp_load_firmware(&mut delay)
+            .await
+            .expect("Firmware load failed");
+
+        // Enable without configuration should fail
+        assert!(matches!(
+            imu.dmp_enable(true).await,
+            Err(Error::DmpNotConfigured)
+        ));
+
+        // Configure (6-axis, no magnetometer required)
+        let config = DmpConfig::new()
+            .with_quaternion_6axis(true)
+            .with_sample_rate(100);
+
+        imu.dmp_configure(&config)
+            .await
+            .expect("Failed to configure DMP");
+
+        // Enable/disable should now succeed
+        assert!(imu.dmp_enable(true).await.is_ok());
         assert!(imu.dmp_enable(false).await.is_ok());
     });
 }
@@ -823,12 +883,42 @@ fn test_dmp_configure() {
             .await
             .expect("Failed to create driver");
 
-        let config = DmpConfig::default()
-            .with_quaternion_9axis(true)
+        let mut delay = MockDelay;
+        imu.dmp_load_firmware(&mut delay)
+            .await
+            .expect("Firmware load failed");
+
+        let config = DmpConfig::new()
+            .with_quaternion_6axis(true)
             .with_sample_rate(100);
 
         let result = imu.dmp_configure(&config).await;
         assert!(result.is_ok());
+    });
+}
+
+#[test]
+#[cfg(feature = "dmp")]
+fn test_dmp_configure_requires_mag_init_for_mag_outputs_async() {
+    block_on(async {
+        let i2c = MockAsyncI2c::new();
+        let interface = I2cInterface::default(i2c);
+
+        let mut imu = Icm20948Driver::new(interface)
+            .await
+            .expect("Failed to create driver");
+
+        let mut delay = MockDelay;
+        imu.dmp_load_firmware(&mut delay)
+            .await
+            .expect("Firmware load failed");
+
+        let config = DmpConfig::new()
+            .with_quaternion_9axis(true)
+            .with_sample_rate(100);
+
+        let result = imu.dmp_configure(&config).await;
+        assert!(matches!(result, Err(Error::MagnetometerNotInitialized)));
     });
 }
 
@@ -943,10 +1033,12 @@ fn test_dmp_full_workflow() {
             .await
             .expect("Failed to initialize DMP");
 
-        // Configure DMP
-        let config = DmpConfig::default()
+        imu.dmp_init_magnetometer(&mut delay)
+            .await
+            .expect("Failed to init magnetometer for DMP");
+
+        let config = DmpConfig::new()
             .with_quaternion_9axis(true)
-            .with_calibrated_gyro(true)
             .with_sample_rate(100);
 
         imu.dmp_configure(&config)

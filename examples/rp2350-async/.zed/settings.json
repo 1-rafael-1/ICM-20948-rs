@@ -5,9 +5,11 @@
         "cargo": {
           "allTargets": false,
           "target": "thumbv8m.main-none-eabihf",
+          "features": ["dmp"],
         },
         "check": {
           "command": "clippy",
+          "features": ["dmp"],
         },
       },
     },

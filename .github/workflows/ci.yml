@@ -117,6 +117,9 @@ jobs:
       - name: Run async tests
         run: cargo test --test async_tests --features std,async
 
+      - name: Run driver tests (blocking API, DMP enabled)
+        run: cargo test --test driver_tests --features std,dmp
+
   # Check documentation builds
   docs:
     name: Documentation
@@ -144,19 +147,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        example:
-          - basic_reading_async
-          - sensor_configuration_async
-          - magnetometer_async
-          - magnetometer_calibration_async
-          - nine_axis_reading_async
-          - fifo_batch_async
-          - fifo_data_validation_async
-          - low_power_mode_async
-          - calibration_async
-          - self_test_async
-          - sample_rate_test_async
-          - ahrs_euler_async
+        include:
+          - example: basic_reading_async
+          - example: sensor_configuration_async
+          - example: magnetometer_async
+          - example: magnetometer_calibration_async
+          - example: nine_axis_reading_async
+          - example: fifo_batch_async
+          - example: fifo_data_validation_async
+          - example: low_power_mode_async
+          - example: calibration_async
+          - example: self_test_async
+          - example: sample_rate_test_async
+          - example: ahrs_euler_async
+          - example: wake_on_motion_async
+          - example: hardware_interrupt_async
+          - example: dmp_integration_async
+            features: dmp
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -178,12 +185,20 @@ jobs:
       - name: Build async example (debug)
         run: |
           cd examples/rp2350-async
-          cargo build --bin ${{ matrix.example }}
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}"
+          else
+            cargo build --bin ${{ matrix.example }}
+          fi
 
       - name: Build async example (release)
         run: |
           cd examples/rp2350-async
-          cargo build --bin ${{ matrix.example }} --release
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}" --release
+          else
+            cargo build --bin ${{ matrix.example }} --release
+          fi
 
   # Cross-compile blocking examples for RP2350
   examples-rp2350-blocking:
@@ -191,19 +206,23 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        example:
-          - basic_reading
-          - sensor_configuration
-          - magnetometer
-          - magnetometer_calibration
-          - nine_axis_reading
-          - fifo_batch
-          - fifo_data_validation
-          - low_power_mode
-          - calibration
-          - self_test
-          - sample_rate_test
-          - ahrs_euler
+        include:
+          - example: basic_reading
+          - example: sensor_configuration
+          - example: magnetometer
+          - example: magnetometer_calibration
+          - example: nine_axis_reading
+          - example: fifo_batch
+          - example: fifo_data_validation
+          - example: low_power_mode
+          - example: calibration
+          - example: self_test
+          - example: sample_rate_test
+          - example: ahrs_euler
+          - example: wake_on_motion
+          - example: hardware_interrupt
+          - example: dmp_integration
+            features: dmp
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -225,11 +244,55 @@ jobs:
       - name: Build blocking example (debug)
         run: |
           cd examples/rp2350-blocking
-          cargo build --bin ${{ matrix.example }}
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}"
+          else
+            cargo build --bin ${{ matrix.example }}
+          fi
 
       - name: Build blocking example (release)
         run: |
           cd examples/rp2350-blocking
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}" --release
+          else
+            cargo build --bin ${{ matrix.example }} --release
+          fi
+
+  # Cross-compile async examples for STM32L431
+  examples-stm32l431-async:
+    name: Build STM32L431 Async Examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example:
+          - wake_on_motion_async
+          - hardware_interrupt_async
+          - dmp_integration_async
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+          targets: thumbv7em-none-eabi
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/stm32l431-async
+          cache-on-failure: true
+
+      - name: Build STM32L431 async example (debug)
+        run: |
+          cd examples/stm32l431-async
+          cargo build --bin ${{ matrix.example }}
+
+      - name: Build STM32L431 async example (release)
+        run: |
+          cd examples/stm32l431-async
           cargo build --bin ${{ matrix.example }} --release
 
   # Final check that everything passed
@@ -244,6 +307,7 @@ jobs:
       - docs
       - examples-rp2350-async
       - examples-rp2350-blocking
+      - examples-stm32l431-async
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs
