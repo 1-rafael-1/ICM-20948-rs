@@ -155,59 +155,79 @@ where
     where
         D: embedded_hal::delay::DelayNs,
     {
+        self.reinit(delay)
+    }
+
+    /// Re-initialize the device (forced baseline)
+    ///
+    /// This is a stronger recovery path intended for retries after a failed init
+    /// or when the device may have been left in an unknown state.
+    pub fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal::delay::DelayNs,
+    {
         const MAX_WAIT_MS: u32 = 100;
         const POLL_INTERVAL_MS: u32 = 1;
 
-        self.select_bank(Bank::Bank0)?;
+        let result = (|| {
+            // Force a known bank baseline
+            self.select_bank(Bank::Bank0)?;
 
-        // Reset the device
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_device_reset(true);
-        })?;
+            // Reset the device
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_device_reset(true);
+            })?;
 
-        // Wait for reset to complete by polling device_reset bit
-        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
-        let mut reset_done = false;
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS);
-            if self
-                .device
-                .pwr_mgmt_1()
-                .read()
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
-            {
-                reset_done = true;
-                break;
+            // Wait for reset to complete by polling device_reset bit
+            // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
+            let mut reset_done = false;
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS);
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read()
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+                {
+                    reset_done = true;
+                    break;
+                }
             }
-        }
 
-        if !reset_done {
-            return Err(Error::InitializationTimeout);
-        }
-
-        // Wake up and select auto clock source
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_sleep(false);
-            w.set_clksel(1);
-        })?;
-
-        // Wait and verify by checking we can read back the configuration correctly
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS);
-
-            // Verify device is responding and configuration took effect
-            if self
-                .device
-                .pwr_mgmt_1()
-                .read()
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
-            {
-                // Device is awake, clock is set
-                return Ok(());
+            if !reset_done {
+                return Err(Error::InitializationTimeout);
             }
+
+            // Wake up and select auto clock source
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_sleep(false);
+                w.set_clksel(1);
+            })?;
+
+            // Wait and verify by checking we can read back the configuration correctly
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS);
+
+                // Verify device is responding and configuration took effect
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read()
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+                {
+                    // Device is awake, clock is set
+                    return Ok(());
+                }
+            }
+
+            Err(Error::InitializationTimeout)
+        })();
+
+        if result.is_err() {
+            self.current_bank = None;
         }
 
-        Err(Error::InitializationTimeout)
+        result
     }
 
     /// Enable SPI mode by disabling the I2C slave interface
@@ -4341,68 +4361,89 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
+        self.reinit(delay).await
+    }
+
+    /// Re-initialize the device (forced baseline)
+    ///
+    /// This is a stronger recovery path intended for retries after a failed init
+    /// or when the device may have been left in an unknown state.
+    pub async fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal_async::delay::DelayNs,
+    {
         const MAX_WAIT_MS: u32 = 100;
         const POLL_INTERVAL_MS: u32 = 1;
 
-        self.select_bank(Bank::Bank0).await?;
+        let result: Result<(), Error<I::Error>> = (async {
+            // Force a known bank baseline
+            self.select_bank(Bank::Bank0).await?;
 
-        // Reset the device
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_device_reset(true);
-            })
-            .await?;
-
-        // Wait for reset to complete
-        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
-        // Start-up time for register read/write is 11ms typical, 100ms max
-        // We use polling to check when reset is done
-        let mut reset_done = false;
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS).await;
-            if self
-                .device
+            // Reset the device
+            self.device
                 .pwr_mgmt_1()
-                .read_async()
-                .await
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
-            {
-                reset_done = true;
-                break;
+                .modify_async(|w| {
+                    w.set_device_reset(true);
+                })
+                .await?;
+
+            // Wait for reset to complete
+            // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
+            // Start-up time for register read/write is 11ms typical, 100ms max
+            // We use polling to check when reset is done
+            let mut reset_done = false;
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS).await;
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read_async()
+                    .await
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+                {
+                    reset_done = true;
+                    break;
+                }
             }
-        }
 
-        if !reset_done {
-            return Err(Error::InitializationTimeout);
-        }
+            if !reset_done {
+                return Err(Error::InitializationTimeout);
+            }
 
-        // Wake up and select auto clock source
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_sleep(false);
-                w.set_clksel(1);
-            })
-            .await?;
-
-        // Wait and verify by checking we can read back the configuration correctly
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS).await;
-            // Verify device is responding and configuration took effect
-            if self
-                .device
+            // Wake up and select auto clock source
+            self.device
                 .pwr_mgmt_1()
-                .read_async()
-                .await
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
-            {
-                // Device is awake, clock is set
-                return Ok(());
+                .modify_async(|w| {
+                    w.set_sleep(false);
+                    w.set_clksel(1);
+                })
+                .await?;
+
+            // Wait and verify by checking we can read back the configuration correctly
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS).await;
+                // Verify device is responding and configuration took effect
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read_async()
+                    .await
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+                {
+                    // Device is awake, clock is set
+                    return Ok(());
+                }
             }
+
+            Err(Error::InitializationTimeout)
+        })
+        .await;
+
+        if result.is_err() {
+            self.current_bank = None;
         }
 
-        Err(Error::InitializationTimeout)
+        result
     }
 
     /// Select a register bank
