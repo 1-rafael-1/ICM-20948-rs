@@ -89,6 +89,7 @@ cargo run --release --bin hardware_interrupt_async
 cargo run --release --bin wake_on_motion_async
 cargo run --release --bin dmp_integration_async --features dmp
 cargo run --release --bin dmp_integration_6axis_async --features dmp
+cargo run --release --bin dmp_integration_6axis_async --features dmp-lzss # compressed DMP firmware path
 ```
 
 ## Troubleshooting

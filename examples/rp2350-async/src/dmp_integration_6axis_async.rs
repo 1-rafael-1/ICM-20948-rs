@@ -88,7 +88,10 @@ async fn main(_spawner: Spawner) {
     imu.configure_interrupts(&int_cfg).await.unwrap();
 
     info!("Loading DMP firmware and configuring...");
+    let fw_load_start = Instant::now();
     imu.dmp_init(&mut delay).await.unwrap();
+    let fw_load_elapsed_ms = (Instant::now() - fw_load_start).as_millis();
+    info!("DMP firmware load took {} ms", fw_load_elapsed_ms);
     // 6-axis mode: no magnetometer/DMP geomag init needed
 
     let dmp_sample_rate_hz: u16 = 225;

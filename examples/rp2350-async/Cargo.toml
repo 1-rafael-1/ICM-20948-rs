@@ -56,6 +56,7 @@ micromath = "2.1"
 [features]
 default = []
 dmp = ["icm20948/dmp"]
+dmp-lzss = ["dmp", "icm20948/dmp-lzss"]
 
 [[bin]]
 name = "basic_reading_async"
