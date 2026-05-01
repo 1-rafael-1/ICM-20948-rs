@@ -181,7 +181,7 @@ fn test_fifo_read_efficiency_exact_count() {
     let i2c = MockI2c::with_fifo_count(100);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 100];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -201,7 +201,7 @@ fn test_fifo_read_efficiency_buffer_smaller() {
     let i2c = MockI2c::with_fifo_count(200);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 100];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -224,7 +224,7 @@ fn test_fifo_read_efficiency_buffer_larger() {
     let i2c = MockI2c::with_fifo_count(50);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 100];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -246,7 +246,7 @@ fn test_fifo_read_efficiency_empty() {
     let i2c = MockI2c::with_fifo_count(0);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 100];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -269,7 +269,7 @@ fn test_fifo_read_no_repeated_count_checks() {
     }
 
     let interface = I2cInterface::default(i2c.clone());
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 50];
     let _ = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -291,7 +291,7 @@ fn test_fifo_read_large_buffer() {
     let i2c = MockI2c::with_fifo_count(512);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 512];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");
@@ -311,7 +311,7 @@ fn test_fifo_read_partial_records() {
     let i2c = MockI2c::with_fifo_count(42);
     let interface = I2cInterface::default(i2c);
 
-    let mut driver = Icm20948Driver::new(interface).expect("Failed to create driver");
+    let mut driver = Icm20948Driver::try_new(interface).expect("Failed to create driver");
 
     let mut buffer = [0u8; 100];
     let bytes_read = driver.fifo_read(&mut buffer).expect("Failed to read FIFO");

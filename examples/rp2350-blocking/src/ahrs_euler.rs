@@ -138,7 +138,7 @@ async fn main(_spawner: Spawner) {
 
     info!("Initializing ICM-20948...");
     let i2c_interface = I2cInterface::default(i2c);
-    let mut imu = match Icm20948Driver::new(i2c_interface) {
+    let mut imu = match Icm20948Driver::try_new(i2c_interface) {
         Ok(imu) => {
             info!("ICM-20948 detected!");
             imu

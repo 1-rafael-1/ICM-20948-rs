@@ -88,17 +88,12 @@ where
 {
     /// Create a new ICM-20948 driver instance
     ///
-    /// This will verify the `WHO_AM_I` register but will not initialize the device.
-    /// Call `init()` after construction to configure the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Communication with the device fails
-    /// - The `WHO_AM_I` register contains an unexpected value
-    pub fn new(interface: I) -> Result<Self, Error<I::Error>> {
+    /// This constructor is infallible and performs no bus I/O.
+    /// Call [`verify_who_am_i`](Self::verify_who_am_i) to confirm communication,
+    /// then call `init()` to configure the device.
+    pub fn new(interface: I) -> Self {
         let device = RegisterDevice::new(interface);
-        let mut driver = Self {
+        Self {
             device,
             current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
@@ -114,16 +109,17 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
-        };
-
-        // Verify WHO_AM_I
-        driver.select_bank(Bank::Bank0)?;
-        let who_am_i = driver.read_who_am_i()?;
-
-        if who_am_i != WHO_AM_I_VALUE {
-            return Err(Error::InvalidDevice(who_am_i));
         }
+    }
 
+    /// Create a new driver and immediately verify the device identity
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub fn try_new(interface: I) -> Result<Self, Error<I::Error>> {
+        let mut driver = Self::new(interface);
+        driver.verify_who_am_i()?;
         Ok(driver)
     }
 
@@ -155,59 +151,83 @@ where
     where
         D: embedded_hal::delay::DelayNs,
     {
+        self.reinit(delay)
+    }
+
+    /// Re-initialize the device (forced baseline)
+    ///
+    /// This is a stronger recovery path intended for retries after a failed init
+    /// or when the device may have been left in an unknown state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or reset does not complete.
+    pub fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal::delay::DelayNs,
+    {
         const MAX_WAIT_MS: u32 = 100;
         const POLL_INTERVAL_MS: u32 = 1;
 
-        self.select_bank(Bank::Bank0)?;
+        let result = (|| {
+            // Force a known bank baseline
+            self.select_bank(Bank::Bank0)?;
 
-        // Reset the device
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_device_reset(true);
-        })?;
+            // Reset the device
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_device_reset(true);
+            })?;
 
-        // Wait for reset to complete by polling device_reset bit
-        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
-        let mut reset_done = false;
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS);
-            if self
-                .device
-                .pwr_mgmt_1()
-                .read()
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
-            {
-                reset_done = true;
-                break;
+            // Wait for reset to complete by polling device_reset bit
+            // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS": typical 11ms, max 100ms
+            let mut reset_done = false;
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS);
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read()
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+                {
+                    reset_done = true;
+                    break;
+                }
             }
-        }
 
-        if !reset_done {
-            return Err(Error::InitializationTimeout);
-        }
-
-        // Wake up and select auto clock source
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_sleep(false);
-            w.set_clksel(1);
-        })?;
-
-        // Wait and verify by checking we can read back the configuration correctly
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS);
-
-            // Verify device is responding and configuration took effect
-            if self
-                .device
-                .pwr_mgmt_1()
-                .read()
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
-            {
-                // Device is awake, clock is set
-                return Ok(());
+            if !reset_done {
+                return Err(Error::InitializationTimeout);
             }
+
+            // Wake up and select auto clock source
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_sleep(false);
+                w.set_clksel(1);
+            })?;
+
+            // Wait and verify by checking we can read back the configuration correctly
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS);
+
+                // Verify device is responding and configuration took effect
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read()
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+                {
+                    // Device is awake, clock is set
+                    return Ok(());
+                }
+            }
+
+            Err(Error::InitializationTimeout)
+        })();
+
+        if result.is_err() {
+            self.current_bank = None;
         }
 
-        Err(Error::InitializationTimeout)
+        result
     }
 
     /// Enable SPI mode by disabling the I2C slave interface
@@ -234,7 +254,8 @@ where
     /// let interface = SpiInterface::new(spi_device);
     ///
     /// // Create and initialize driver
-    /// let mut imu = Icm20948Driver::new(interface)?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i()?;
     /// imu.init(&mut delay)?;
     ///
     /// // Enable SPI mode (required!)
@@ -281,6 +302,19 @@ where
         self.select_bank(Bank::Bank0)?;
         let reg = self.device.who_am_i().read()?;
         Ok(reg.who_am_i())
+    }
+
+    /// Verify the `WHO_AM_I` register against the expected value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub fn verify_who_am_i(&mut self) -> Result<(), Error<I::Error>> {
+        let who_am_i = self.read_who_am_i()?;
+        if who_am_i != WHO_AM_I_VALUE {
+            return Err(Error::InvalidDevice(who_am_i));
+        }
+        Ok(())
     }
 
     /// Read accelerometer data
@@ -431,15 +465,46 @@ where
 
     /// Get a mutable reference to the current bank tracker (for advanced usage)
     ///
-    /// At initialization, before any banks have been selected this will return bank. Once the
-    /// driver selects a bank -- occurs on any register access -- then it knows the bank and from
-    /// then on this will always return a valid Bank value.
+    /// At initialization, before any banks have been selected this returns `None`.
+    /// The cache can also be invalidated during recovery paths (e.g., failed DMP init),
+    /// so callers should handle `None` even after prior bank activity.
     pub const fn current_bank_mut(&mut self) -> Option<&mut Bank> {
         self.current_bank.as_mut()
     }
 
     // ==================== DMP METHODS ====================
     // Digital Motion Processor support (requires "dmp" feature)
+
+    #[cfg(feature = "dmp")]
+    const fn invalidate_dmp_state(&mut self) {
+        self.current_bank = None;
+        self.dmp_firmware_loaded = false;
+        self.dmp_configured = false;
+    }
+
+    #[cfg(feature = "dmp")]
+    fn dmp_hard_reinit(&mut self) -> Result<(), Error<I::Error>> {
+        // Force a known baseline before DMP init/retry
+        self.select_bank(Bank::Bank0)?;
+
+        // Disable DMP/FIFO/I2C master routing
+        self.device.user_ctrl().modify(|w| {
+            w.set_dmp_en(false);
+            w.set_fifo_en(false);
+            w.set_i_2_c_mst_en(false);
+        })?;
+
+        // Reset FIFO and DMP state
+        self.device.user_ctrl().modify(|w| {
+            w.set_sram_rst(true);
+        })?;
+        self.device.user_ctrl().modify(|w| {
+            w.set_dmp_rst(true);
+        })?;
+
+        self.invalidate_dmp_state();
+        Ok(())
+    }
 
     #[cfg(feature = "dmp")]
     /// Load DMP firmware into the device
@@ -611,82 +676,87 @@ where
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dmp_init(&mut self) -> Result<(), Error<I::Error>> {
-        // Reset the DMP
-        self.dmp_reset()?;
+        let result = (|| {
+            self.dmp_hard_reinit()?;
 
-        // Note: Caller should delay ~1ms here for reset to complete
+            // Note: Caller should delay ~1ms here for reset to complete
 
-        // Ensure accelerometer and gyroscope are not in low power or cycle mode
-        // DMP requires sensors in full power mode
-        self.select_bank(Bank::Bank0)?;
+            // Ensure accelerometer and gyroscope are not in low power or cycle mode
+            // DMP requires sensors in full power mode
+            self.select_bank(Bank::Bank0)?;
 
-        // Disable low power mode in PWR_MGMT_1
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_lp_en(false); // Disable low power mode
-            w.set_sleep(false); // Ensure not in sleep
-            w.set_clksel(1); // Auto-select best clock (0x01)
-        })?;
+            // Disable low power mode in PWR_MGMT_1
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_lp_en(false); // Disable low power mode
+                w.set_sleep(false); // Ensure not in sleep
+                w.set_clksel(1); // Auto-select best clock (0x01)
+            })?;
 
-        // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
-        // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
-        self.device.lp_config().write(|w| {
-            w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
-            w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
-            w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
-        })?;
+            // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
+            // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
+            self.device.lp_config().write(|w| {
+                w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
+                w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
+                w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
+            })?;
 
-        // Ensure all accelerometer and gyroscope axes are powered on
-        // PWR_MGMT_2 should be 0x00 (all sensors enabled)
-        self.device.pwr_mgmt_2().write(|w| {
-            w.set_disable_accel_x(false);
-            w.set_disable_accel_y(false);
-            w.set_disable_accel_z(false);
-            w.set_disable_gyro_x(false);
-            w.set_disable_gyro_y(false);
-            w.set_disable_gyro_z(false);
-        })?;
+            // Ensure all accelerometer and gyroscope axes are powered on
+            // PWR_MGMT_2 should be 0x00 (all sensors enabled)
+            self.device.pwr_mgmt_2().write(|w| {
+                w.set_disable_accel_x(false);
+                w.set_disable_accel_y(false);
+                w.set_disable_accel_z(false);
+                w.set_disable_gyro_x(false);
+                w.set_disable_gyro_y(false);
+                w.set_disable_gyro_z(false);
+            })?;
 
-        // Configure sensor sample rates before loading firmware
-        self.select_bank(Bank::Bank2)?;
+            // Configure sensor sample rates before loading firmware
+            self.select_bank(Bank::Bank2)?;
 
-        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
-        self.device.bank_2_gyro_config_1().modify(|w| {
-            w.set_gyro_fchoice(true);
-        })?;
+            // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+            self.device.bank_2_gyro_config_1().modify(|w| {
+                w.set_gyro_fchoice(true);
+            })?;
 
-        // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
-        self.device.bank_2_gyro_smplrt_div().write(|w| {
-            w.set_gyro_smplrt_div(0);
-        })?;
+            // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
+            self.device.bank_2_gyro_smplrt_div().write(|w| {
+                w.set_gyro_smplrt_div(0);
+            })?;
 
-        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
-        self.device.bank_2_accel_config().modify(|w| {
-            w.set_accel_fchoice(true);
-        })?;
+            // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+            self.device.bank_2_accel_config().modify(|w| {
+                w.set_accel_fchoice(true);
+            })?;
 
-        // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
-        self.device.bank_2_accel_smplrt_div().write(|w| {
-            w.set_accel_smplrt_div(0);
-        })?;
+            // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
+            self.device.bank_2_accel_smplrt_div().write(|w| {
+                w.set_accel_smplrt_div(0);
+            })?;
 
-        // Enable ODR_ALIGN_EN to synchronize sensor data streams
-        self.device.bank_2_odr_align_en().write(|w| {
-            w.set_odr_align_en(true);
-        })?;
+            // Enable ODR_ALIGN_EN to synchronize sensor data streams
+            self.device.bank_2_odr_align_en().write(|w| {
+                w.set_odr_align_en(true);
+            })?;
 
-        // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
-        self.device.bank_2_mod_ctrl_usr().write(|w| {
-            w.set_reg_lp_dmp_en(true);
-        })?;
+            // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
+            self.device.bank_2_mod_ctrl_usr().write(|w| {
+                w.set_reg_lp_dmp_en(true);
+            })?;
 
-        self.select_bank(Bank::Bank0)?;
+            self.select_bank(Bank::Bank0)?;
 
-        // Load the firmware after configuring hardware
-        self.dmp_load_firmware()?;
+            // Load the firmware after configuring hardware
+            self.dmp_load_firmware()?;
 
-        // Note: Caller should delay ~1ms here for firmware to initialize
+            // Note: Caller should delay ~1ms here for firmware to initialize
 
-        Ok(())
+            Ok(())
+        })();
+        if result.is_err() {
+            self.invalidate_dmp_state();
+        }
+        result
     }
 
     #[cfg(feature = "dmp")]
@@ -1284,7 +1354,7 @@ where
     #[cfg(feature = "dmp")]
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+        use crate::dmp::config::DmpPacketSize;
 
         let overflow = self.fifo_overflow_status()?;
         if overflow.any_overflow() {
@@ -1305,6 +1375,7 @@ where
 
         #[cfg(feature = "defmt")]
         if self.dmp_packet_size > 2 {
+            use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
                 "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
@@ -4238,17 +4309,12 @@ where
 {
     /// Create a new ICM-20948 driver instance
     ///
-    /// This will verify the `WHO_AM_I` register but will not initialize the device.
-    /// Call `init()` after construction to configure the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Communication with the device fails
-    /// - The `WHO_AM_I` register contains an unexpected value
-    pub async fn new(interface: I) -> Result<Self, Error<I::Error>> {
+    /// This constructor is infallible and performs no bus I/O.
+    /// Call [`verify_who_am_i`](Self::verify_who_am_i) to confirm communication,
+    /// then call `init()` to configure the device.
+    pub fn new(interface: I) -> Self {
         let device = RegisterDevice::new(interface);
-        let mut driver = Self {
+        Self {
             device,
             current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
@@ -4264,16 +4330,17 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
-        };
-
-        // Verify WHO_AM_I
-        driver.select_bank(Bank::Bank0).await?;
-        let who_am_i = driver.read_who_am_i().await?;
-
-        if who_am_i != WHO_AM_I_VALUE {
-            return Err(Error::InvalidDevice(who_am_i));
         }
+    }
 
+    /// Create a new driver and immediately verify the device identity
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub async fn try_new(interface: I) -> Result<Self, Error<I::Error>> {
+        let mut driver = Self::new(interface);
+        driver.verify_who_am_i().await?;
         Ok(driver)
     }
 
@@ -4305,68 +4372,93 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
+        self.reinit(delay).await
+    }
+
+    /// Re-initialize the device (forced baseline)
+    ///
+    /// This is a stronger recovery path intended for retries after a failed init
+    /// or when the device may have been left in an unknown state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or reset does not complete.
+    pub async fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal_async::delay::DelayNs,
+    {
         const MAX_WAIT_MS: u32 = 100;
         const POLL_INTERVAL_MS: u32 = 1;
 
-        self.select_bank(Bank::Bank0).await?;
+        let result: Result<(), Error<I::Error>> = (async {
+            // Force a known bank baseline
+            self.select_bank(Bank::Bank0).await?;
 
-        // Reset the device
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_device_reset(true);
-            })
-            .await?;
-
-        // Wait for reset to complete
-        // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
-        // Start-up time for register read/write is 11ms typical, 100ms max
-        // We use polling to check when reset is done
-        let mut reset_done = false;
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS).await;
-            if self
-                .device
+            // Reset the device
+            self.device
                 .pwr_mgmt_1()
-                .read_async()
-                .await
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
-            {
-                reset_done = true;
-                break;
+                .modify_async(|w| {
+                    w.set_device_reset(true);
+                })
+                .await?;
+
+            // Wait for reset to complete
+            // Datasheet Section 3 "ELECTRICAL CHARACTERISTICS" - "A.C. Electrical Characteristics":
+            // Start-up time for register read/write is 11ms typical, 100ms max
+            // We use polling to check when reset is done
+            let mut reset_done = false;
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS).await;
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read_async()
+                    .await
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.device_reset())
+                {
+                    reset_done = true;
+                    break;
+                }
             }
-        }
 
-        if !reset_done {
-            return Err(Error::InitializationTimeout);
-        }
+            if !reset_done {
+                return Err(Error::InitializationTimeout);
+            }
 
-        // Wake up and select auto clock source
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_sleep(false);
-                w.set_clksel(1);
-            })
-            .await?;
-
-        // Wait and verify by checking we can read back the configuration correctly
-        for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
-            delay.delay_ms(POLL_INTERVAL_MS).await;
-            // Verify device is responding and configuration took effect
-            if self
-                .device
+            // Wake up and select auto clock source
+            self.device
                 .pwr_mgmt_1()
-                .read_async()
-                .await
-                .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
-            {
-                // Device is awake, clock is set
-                return Ok(());
+                .modify_async(|w| {
+                    w.set_sleep(false);
+                    w.set_clksel(1);
+                })
+                .await?;
+
+            // Wait and verify by checking we can read back the configuration correctly
+            for _ in 0..(MAX_WAIT_MS / POLL_INTERVAL_MS) {
+                delay.delay_ms(POLL_INTERVAL_MS).await;
+                // Verify device is responding and configuration took effect
+                if self
+                    .device
+                    .pwr_mgmt_1()
+                    .read_async()
+                    .await
+                    .is_ok_and(|pwr_mgmt| !pwr_mgmt.sleep() && pwr_mgmt.clksel() == 1)
+                {
+                    // Device is awake, clock is set
+                    return Ok(());
+                }
             }
+
+            Err(Error::InitializationTimeout)
+        })
+        .await;
+
+        if result.is_err() {
+            self.current_bank = None;
         }
 
-        Err(Error::InitializationTimeout)
+        result
     }
 
     /// Select a register bank
@@ -4415,7 +4507,8 @@ where
     /// let interface = SpiInterface::new(spi_device);
     ///
     /// // Create and initialize driver
-    /// let mut imu = Icm20948Driver::new(interface).await?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i().await?;
     /// imu.init(&mut delay).await?;
     ///
     /// // Enable SPI mode (required!)
@@ -4446,6 +4539,19 @@ where
         self.select_bank(Bank::Bank0).await?;
         let reg = self.device.who_am_i().read_async().await?;
         Ok(reg.who_am_i())
+    }
+
+    /// Verify the `WHO_AM_I` register against the expected value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub async fn verify_who_am_i(&mut self) -> Result<(), Error<I::Error>> {
+        let who_am_i = self.read_who_am_i().await?;
+        if who_am_i != WHO_AM_I_VALUE {
+            return Err(Error::InvalidDevice(who_am_i));
+        }
+        Ok(())
     }
 
     /// Read the `LP_CONFIG` register as a raw byte (async version)
@@ -5473,6 +5579,46 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "dmp")]
+    const fn invalidate_dmp_state(&mut self) {
+        self.current_bank = None;
+        self.dmp_firmware_loaded = false;
+        self.dmp_configured = false;
+    }
+
+    #[cfg(feature = "dmp")]
+    async fn dmp_hard_reinit(&mut self) -> Result<(), Error<I::Error>> {
+        // Force a known baseline before DMP init/retry
+        self.select_bank(Bank::Bank0).await?;
+
+        // Disable DMP/FIFO/I2C master routing
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_dmp_en(false);
+                w.set_fifo_en(false);
+                w.set_i_2_c_mst_en(false);
+            })
+            .await?;
+
+        // Reset FIFO and DMP state
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_sram_rst(true);
+            })
+            .await?;
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_dmp_rst(true);
+            })
+            .await?;
+
+        self.invalidate_dmp_state();
+        Ok(())
+    }
+
     /// Initialize the DMP (reset, load firmware, configure)
     ///
     /// This is a convenience function that performs the complete DMP initialization:
@@ -5512,115 +5658,121 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
-        // Reset the DMP
-        self.dmp_reset().await?;
+        let result: Result<(), Error<I::Error>> = (async {
+            self.dmp_hard_reinit().await?;
 
-        // Wait for reset to complete
-        delay.delay_ms(1).await;
+            // Wait for reset to complete
+            delay.delay_ms(1).await;
 
-        // CRITICAL: Ensure accel/gyro are NOT in low power or cycle mode
-        // Per Cybergear findings: "The accel and gyro must not be in low power mode when using the DMP"
-        self.select_bank(Bank::Bank0).await?;
+            // CRITICAL: Ensure accel/gyro are NOT in low power or cycle mode
+            // Per Cybergear findings: "The accel and gyro must not be in low power mode when using the DMP"
+            self.select_bank(Bank::Bank0).await?;
 
-        // Disable low power mode in PWR_MGMT_1
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_lp_en(false); // Disable low power mode
-                w.set_sleep(false); // Ensure not in sleep
-                w.set_clksel(1); // Auto-select best clock (0x01)
-            })
-            .await?;
+            // Disable low power mode in PWR_MGMT_1
+            self.device
+                .pwr_mgmt_1()
+                .modify_async(|w| {
+                    w.set_lp_en(false); // Disable low power mode
+                    w.set_sleep(false); // Ensure not in sleep
+                    w.set_clksel(1); // Auto-select best clock (0x01)
+                })
+                .await?;
 
-        // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
-        // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
-        self.device
-            .lp_config()
-            .write_async(|w| {
-                w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
-                w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
-                w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
-            })
-            .await?;
+            // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
+            // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
+            self.device
+                .lp_config()
+                .write_async(|w| {
+                    w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
+                    w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
+                    w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
+                })
+                .await?;
 
-        // Ensure all accelerometer and gyroscope axes are powered on
-        // PWR_MGMT_2 should be 0x00 (all sensors enabled)
-        self.device
-            .pwr_mgmt_2()
-            .write_async(|w| {
-                w.set_disable_accel_x(false);
-                w.set_disable_accel_y(false);
-                w.set_disable_accel_z(false);
-                w.set_disable_gyro_x(false);
-                w.set_disable_gyro_y(false);
-                w.set_disable_gyro_z(false);
-            })
-            .await?;
+            // Ensure all accelerometer and gyroscope axes are powered on
+            // PWR_MGMT_2 should be 0x00 (all sensors enabled)
+            self.device
+                .pwr_mgmt_2()
+                .write_async(|w| {
+                    w.set_disable_accel_x(false);
+                    w.set_disable_accel_y(false);
+                    w.set_disable_accel_z(false);
+                    w.set_disable_gyro_x(false);
+                    w.set_disable_gyro_y(false);
+                    w.set_disable_gyro_z(false);
+                })
+                .await?;
 
-        // Configure sensor sample rates before loading firmware
-        self.select_bank(Bank::Bank2).await?;
+            // Configure sensor sample rates before loading firmware
+            self.select_bank(Bank::Bank2).await?;
 
-        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+            // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
 
-        self.device
-            .bank_2_gyro_config_1()
-            .modify_async(|w| {
-                w.set_gyro_fchoice(true);
-            })
-            .await?;
+            self.device
+                .bank_2_gyro_config_1()
+                .modify_async(|w| {
+                    w.set_gyro_fchoice(true);
+                })
+                .await?;
 
-        // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
-        self.device
-            .bank_2_gyro_smplrt_div()
-            .write_async(|w| {
-                w.set_gyro_smplrt_div(0);
-            })
-            .await?;
+            // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
+            self.device
+                .bank_2_gyro_smplrt_div()
+                .write_async(|w| {
+                    w.set_gyro_smplrt_div(0);
+                })
+                .await?;
 
-        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+            // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
 
-        self.device
-            .bank_2_accel_config()
-            .modify_async(|w| {
-                w.set_accel_fchoice(true);
-            })
-            .await?;
+            self.device
+                .bank_2_accel_config()
+                .modify_async(|w| {
+                    w.set_accel_fchoice(true);
+                })
+                .await?;
 
-        // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
-        self.device
-            .bank_2_accel_smplrt_div()
-            .write_async(|w| {
-                w.set_accel_smplrt_div(0);
-            })
-            .await?;
+            // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
+            self.device
+                .bank_2_accel_smplrt_div()
+                .write_async(|w| {
+                    w.set_accel_smplrt_div(0);
+                })
+                .await?;
 
-        // Enable ODR_ALIGN_EN to synchronize sensor data streams
+            // Enable ODR_ALIGN_EN to synchronize sensor data streams
 
-        self.device
-            .bank_2_odr_align_en()
-            .write_async(|w| {
-                w.set_odr_align_en(true);
-            })
-            .await?;
+            self.device
+                .bank_2_odr_align_en()
+                .write_async(|w| {
+                    w.set_odr_align_en(true);
+                })
+                .await?;
 
-        // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
+            // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
 
-        self.device
-            .bank_2_mod_ctrl_usr()
-            .write_async(|w| {
-                w.set_reg_lp_dmp_en(true);
-            })
-            .await?;
+            self.device
+                .bank_2_mod_ctrl_usr()
+                .write_async(|w| {
+                    w.set_reg_lp_dmp_en(true);
+                })
+                .await?;
 
-        self.select_bank(Bank::Bank0).await?;
+            self.select_bank(Bank::Bank0).await?;
 
-        // Load the firmware after configuring hardware
-        self.dmp_load_firmware(delay).await?;
+            // Load the firmware after configuring hardware
+            self.dmp_load_firmware(delay).await?;
 
-        // Wait for firmware to initialize
-        delay.delay_ms(2).await;
+            // Wait for firmware to initialize
+            delay.delay_ms(2).await;
 
-        Ok(())
+            Ok(())
+        })
+        .await;
+        if result.is_err() {
+            self.invalidate_dmp_state();
+        }
+        result
     }
 
     /// Reset the DMP processor
@@ -6353,7 +6505,7 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+        use crate::dmp::config::DmpPacketSize;
 
         let overflow = self.fifo_overflow_status().await?;
         if overflow.any_overflow() {
@@ -6375,6 +6527,7 @@ where
 
         #[cfg(feature = "defmt")]
         if self.dmp_packet_size > 2 {
+            use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
                 "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",

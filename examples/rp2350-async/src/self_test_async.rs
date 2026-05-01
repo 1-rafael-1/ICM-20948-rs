@@ -63,7 +63,7 @@ async fn main(_spawner: Spawner) {
 
     // Create ICM-20948 driver with default I2C address (0x68)
     let interface = I2cInterface::default(i2c);
-    let mut imu = match Icm20948Driver::new(interface).await {
+    let mut imu = match Icm20948Driver::try_new(interface).await {
         Ok(imu) => {
             info!("✓ ICM-20948 detected");
             imu

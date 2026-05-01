@@ -3,6 +3,8 @@
 //! This example demonstrates loading the DMP firmware, configuring quaternion output,
 //! and reading DMP FIFO packets using the INT1 pin for interrupts.
 //!
+//! This uses 6-axis DMP mode (no magnetometer data)
+//!
 //! Hardware connections (I2C0):
 //! - SDA: GPIO12
 //! - SCL: GPIO13
@@ -26,7 +28,7 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Instant, Timer};
-use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
+use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
 use panic_probe as _;
 
 /// Firmware image type for bootloader
@@ -41,7 +43,7 @@ bind_interrupts!(struct Irqs {
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    info!("Starting DMP integration example (RP2350 async)...");
+    info!("Starting DMP integration 6-axis example (RP2350 async)...");
 
     let p = embassy_rp::init(Config::default());
 
@@ -86,13 +88,17 @@ async fn main(_spawner: Spawner) {
     imu.configure_interrupts(&int_cfg).await.unwrap();
 
     info!("Loading DMP firmware and configuring...");
+    let fw_load_start = Instant::now();
     imu.dmp_init(&mut delay).await.unwrap();
-    imu.dmp_init_magnetometer(&mut delay).await.unwrap();
+    let fw_load_elapsed_ms = (Instant::now() - fw_load_start).as_millis();
+    info!("DMP firmware load took {} ms", fw_load_elapsed_ms);
+    // 6-axis mode: no magnetometer/DMP geomag init needed
 
     let dmp_sample_rate_hz: u16 = 225;
 
     let dmp_config = DmpConfig::new()
-        .with_quaternion_9axis(true)
+        .with_quaternion_6axis(true)
+        .with_quaternion_9axis(false)
         .with_host_calibrated_accel(true)
         .with_raw_accel(true)
         .with_sample_rate(dmp_sample_rate_hz);
@@ -121,7 +127,7 @@ async fn main(_spawner: Spawner) {
         if let Some(packet) = imu.dmp_read_fifo().await.unwrap() {
             sample_count = sample_count.wrapping_add(1);
 
-            let quat_opt = packet.quaternion_9axis.or(packet.quaternion_6axis);
+            let quat_opt = packet.quaternion_6axis;
 
             if let Some(quat) = quat_opt {
                 let euler = quat.to_euler_angles();
@@ -165,7 +171,7 @@ async fn main(_spawner: Spawner) {
                     let now = Instant::now();
                     let diff_micros = (now - last_print_time).as_micros() as f32;
                     let fps = if diff_micros > 0.0 {
-                        10.0 / (diff_micros / 1_000_000.0)
+                        100.0 / (diff_micros / 1_000_000.0)
                     } else {
                         0.0
                     };

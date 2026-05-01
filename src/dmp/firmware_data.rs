@@ -1,4 +1,4 @@
-// Auto-converted from icm20948_img.dmp3a.h
+// Auto-converted from the upstream SparkFun ICM-20948 DMP image
 // Total bytes: 14301
 /// Raw DMP firmware blob (SparkFun ICM-20948 DMP image).
 pub const DMP_FIRMWARE: &[u8] = &[

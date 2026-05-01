@@ -56,6 +56,7 @@ micromath = "2.1"
 [features]
 default = []
 dmp = ["icm20948/dmp"]
+dmp-lzss = ["dmp", "icm20948/dmp-lzss"]
 
 [[bin]]
 name = "basic_reading_async"
@@ -120,4 +121,9 @@ path = "src/hardware_interrupt_async.rs"
 [[bin]]
 name = "dmp_integration_async"
 path = "src/dmp_integration_async.rs"
+required-features = ["dmp"]
+
+[[bin]]
+name = "dmp_integration_6axis_async"
+path = "src/dmp_integration_6axis_async.rs"
 required-features = ["dmp"]
