@@ -431,15 +431,46 @@ where
 
     /// Get a mutable reference to the current bank tracker (for advanced usage)
     ///
-    /// At initialization, before any banks have been selected this will return bank. Once the
-    /// driver selects a bank -- occurs on any register access -- then it knows the bank and from
-    /// then on this will always return a valid Bank value.
+    /// At initialization, before any banks have been selected this returns `None`.
+    /// The cache can also be invalidated during recovery paths (e.g., failed DMP init),
+    /// so callers should handle `None` even after prior bank activity.
     pub const fn current_bank_mut(&mut self) -> Option<&mut Bank> {
         self.current_bank.as_mut()
     }
 
     // ==================== DMP METHODS ====================
     // Digital Motion Processor support (requires "dmp" feature)
+
+    #[cfg(feature = "dmp")]
+    fn invalidate_dmp_state(&mut self) {
+        self.current_bank = None;
+        self.dmp_firmware_loaded = false;
+        self.dmp_configured = false;
+    }
+
+    #[cfg(feature = "dmp")]
+    fn dmp_hard_reinit(&mut self) -> Result<(), Error<I::Error>> {
+        // Force a known baseline before DMP init/retry
+        self.select_bank(Bank::Bank0)?;
+
+        // Disable DMP/FIFO/I2C master routing
+        self.device.user_ctrl().modify(|w| {
+            w.set_dmp_en(false);
+            w.set_fifo_en(false);
+            w.set_i_2_c_mst_en(false);
+        })?;
+
+        // Reset FIFO and DMP state
+        self.device.user_ctrl().modify(|w| {
+            w.set_sram_rst(true);
+        })?;
+        self.device.user_ctrl().modify(|w| {
+            w.set_dmp_rst(true);
+        })?;
+
+        self.invalidate_dmp_state();
+        Ok(())
+    }
 
     #[cfg(feature = "dmp")]
     /// Load DMP firmware into the device
@@ -611,82 +642,87 @@ where
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dmp_init(&mut self) -> Result<(), Error<I::Error>> {
-        // Reset the DMP
-        self.dmp_reset()?;
+        let result = (|| {
+            self.dmp_hard_reinit()?;
 
-        // Note: Caller should delay ~1ms here for reset to complete
+            // Note: Caller should delay ~1ms here for reset to complete
 
-        // Ensure accelerometer and gyroscope are not in low power or cycle mode
-        // DMP requires sensors in full power mode
-        self.select_bank(Bank::Bank0)?;
+            // Ensure accelerometer and gyroscope are not in low power or cycle mode
+            // DMP requires sensors in full power mode
+            self.select_bank(Bank::Bank0)?;
 
-        // Disable low power mode in PWR_MGMT_1
-        self.device.pwr_mgmt_1().modify(|w| {
-            w.set_lp_en(false); // Disable low power mode
-            w.set_sleep(false); // Ensure not in sleep
-            w.set_clksel(1); // Auto-select best clock (0x01)
-        })?;
+            // Disable low power mode in PWR_MGMT_1
+            self.device.pwr_mgmt_1().modify(|w| {
+                w.set_lp_en(false); // Disable low power mode
+                w.set_sleep(false); // Ensure not in sleep
+                w.set_clksel(1); // Auto-select best clock (0x01)
+            })?;
 
-        // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
-        // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
-        self.device.lp_config().write(|w| {
-            w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
-            w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
-            w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
-        })?;
+            // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
+            // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
+            self.device.lp_config().write(|w| {
+                w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
+                w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
+                w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
+            })?;
 
-        // Ensure all accelerometer and gyroscope axes are powered on
-        // PWR_MGMT_2 should be 0x00 (all sensors enabled)
-        self.device.pwr_mgmt_2().write(|w| {
-            w.set_disable_accel_x(false);
-            w.set_disable_accel_y(false);
-            w.set_disable_accel_z(false);
-            w.set_disable_gyro_x(false);
-            w.set_disable_gyro_y(false);
-            w.set_disable_gyro_z(false);
-        })?;
+            // Ensure all accelerometer and gyroscope axes are powered on
+            // PWR_MGMT_2 should be 0x00 (all sensors enabled)
+            self.device.pwr_mgmt_2().write(|w| {
+                w.set_disable_accel_x(false);
+                w.set_disable_accel_y(false);
+                w.set_disable_accel_z(false);
+                w.set_disable_gyro_x(false);
+                w.set_disable_gyro_y(false);
+                w.set_disable_gyro_z(false);
+            })?;
 
-        // Configure sensor sample rates before loading firmware
-        self.select_bank(Bank::Bank2)?;
+            // Configure sensor sample rates before loading firmware
+            self.select_bank(Bank::Bank2)?;
 
-        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
-        self.device.bank_2_gyro_config_1().modify(|w| {
-            w.set_gyro_fchoice(true);
-        })?;
+            // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+            self.device.bank_2_gyro_config_1().modify(|w| {
+                w.set_gyro_fchoice(true);
+            })?;
 
-        // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
-        self.device.bank_2_gyro_smplrt_div().write(|w| {
-            w.set_gyro_smplrt_div(0);
-        })?;
+            // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
+            self.device.bank_2_gyro_smplrt_div().write(|w| {
+                w.set_gyro_smplrt_div(0);
+            })?;
 
-        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
-        self.device.bank_2_accel_config().modify(|w| {
-            w.set_accel_fchoice(true);
-        })?;
+            // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+            self.device.bank_2_accel_config().modify(|w| {
+                w.set_accel_fchoice(true);
+            })?;
 
-        // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
-        self.device.bank_2_accel_smplrt_div().write(|w| {
-            w.set_accel_smplrt_div(0);
-        })?;
+            // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
+            self.device.bank_2_accel_smplrt_div().write(|w| {
+                w.set_accel_smplrt_div(0);
+            })?;
 
-        // Enable ODR_ALIGN_EN to synchronize sensor data streams
-        self.device.bank_2_odr_align_en().write(|w| {
-            w.set_odr_align_en(true);
-        })?;
+            // Enable ODR_ALIGN_EN to synchronize sensor data streams
+            self.device.bank_2_odr_align_en().write(|w| {
+                w.set_odr_align_en(true);
+            })?;
 
-        // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
-        self.device.bank_2_mod_ctrl_usr().write(|w| {
-            w.set_reg_lp_dmp_en(true);
-        })?;
+            // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
+            self.device.bank_2_mod_ctrl_usr().write(|w| {
+                w.set_reg_lp_dmp_en(true);
+            })?;
 
-        self.select_bank(Bank::Bank0)?;
+            self.select_bank(Bank::Bank0)?;
 
-        // Load the firmware after configuring hardware
-        self.dmp_load_firmware()?;
+            // Load the firmware after configuring hardware
+            self.dmp_load_firmware()?;
 
-        // Note: Caller should delay ~1ms here for firmware to initialize
+            // Note: Caller should delay ~1ms here for firmware to initialize
 
-        Ok(())
+            Ok(())
+        })();
+        if result.is_err() {
+            self.invalidate_dmp_state();
+        }
+        result
     }
 
     #[cfg(feature = "dmp")]
@@ -5473,6 +5509,46 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "dmp")]
+    fn invalidate_dmp_state(&mut self) {
+        self.current_bank = None;
+        self.dmp_firmware_loaded = false;
+        self.dmp_configured = false;
+    }
+
+    #[cfg(feature = "dmp")]
+    async fn dmp_hard_reinit(&mut self) -> Result<(), Error<I::Error>> {
+        // Force a known baseline before DMP init/retry
+        self.select_bank(Bank::Bank0).await?;
+
+        // Disable DMP/FIFO/I2C master routing
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_dmp_en(false);
+                w.set_fifo_en(false);
+                w.set_i_2_c_mst_en(false);
+            })
+            .await?;
+
+        // Reset FIFO and DMP state
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_sram_rst(true);
+            })
+            .await?;
+        self.device
+            .user_ctrl()
+            .modify_async(|w| {
+                w.set_dmp_rst(true);
+            })
+            .await?;
+
+        self.invalidate_dmp_state();
+        Ok(())
+    }
+
     /// Initialize the DMP (reset, load firmware, configure)
     ///
     /// This is a convenience function that performs the complete DMP initialization:
@@ -5512,115 +5588,121 @@ where
     where
         D: embedded_hal_async::delay::DelayNs,
     {
-        // Reset the DMP
-        self.dmp_reset().await?;
+        let result: Result<(), Error<I::Error>> = (async {
+            self.dmp_hard_reinit().await?;
 
-        // Wait for reset to complete
-        delay.delay_ms(1).await;
+            // Wait for reset to complete
+            delay.delay_ms(1).await;
 
-        // CRITICAL: Ensure accel/gyro are NOT in low power or cycle mode
-        // Per Cybergear findings: "The accel and gyro must not be in low power mode when using the DMP"
-        self.select_bank(Bank::Bank0).await?;
+            // CRITICAL: Ensure accel/gyro are NOT in low power or cycle mode
+            // Per Cybergear findings: "The accel and gyro must not be in low power mode when using the DMP"
+            self.select_bank(Bank::Bank0).await?;
 
-        // Disable low power mode in PWR_MGMT_1
-        self.device
-            .pwr_mgmt_1()
-            .modify_async(|w| {
-                w.set_lp_en(false); // Disable low power mode
-                w.set_sleep(false); // Ensure not in sleep
-                w.set_clksel(1); // Auto-select best clock (0x01)
-            })
-            .await?;
+            // Disable low power mode in PWR_MGMT_1
+            self.device
+                .pwr_mgmt_1()
+                .modify_async(|w| {
+                    w.set_lp_en(false); // Disable low power mode
+                    w.set_sleep(false); // Ensure not in sleep
+                    w.set_clksel(1); // Auto-select best clock (0x01)
+                })
+                .await?;
 
-        // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
-        // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
-        self.device
-            .lp_config()
-            .write_async(|w| {
-                w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
-                w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
-                w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
-            })
-            .await?;
+            // Disable accel/gyro cycle modes, but keep I2C master cycle enabled for magnetometer
+            // LP_CONFIG should be 0x40 (only I2C master in duty cycle mode)
+            self.device
+                .lp_config()
+                .write_async(|w| {
+                    w.set_accel_cycle(false); // Accel must NOT be in cycle mode for DMP
+                    w.set_gyro_cycle(false); // Gyro must NOT be in cycle mode for DMP
+                    w.set_i_2_c_mst_cycle(false); // Disable for now, will re-enable after DMP starts
+                })
+                .await?;
 
-        // Ensure all accelerometer and gyroscope axes are powered on
-        // PWR_MGMT_2 should be 0x00 (all sensors enabled)
-        self.device
-            .pwr_mgmt_2()
-            .write_async(|w| {
-                w.set_disable_accel_x(false);
-                w.set_disable_accel_y(false);
-                w.set_disable_accel_z(false);
-                w.set_disable_gyro_x(false);
-                w.set_disable_gyro_y(false);
-                w.set_disable_gyro_z(false);
-            })
-            .await?;
+            // Ensure all accelerometer and gyroscope axes are powered on
+            // PWR_MGMT_2 should be 0x00 (all sensors enabled)
+            self.device
+                .pwr_mgmt_2()
+                .write_async(|w| {
+                    w.set_disable_accel_x(false);
+                    w.set_disable_accel_y(false);
+                    w.set_disable_accel_z(false);
+                    w.set_disable_gyro_x(false);
+                    w.set_disable_gyro_y(false);
+                    w.set_disable_gyro_z(false);
+                })
+                .await?;
 
-        // Configure sensor sample rates before loading firmware
-        self.select_bank(Bank::Bank2).await?;
+            // Configure sensor sample rates before loading firmware
+            self.select_bank(Bank::Bank2).await?;
 
-        // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
+            // Enable GYRO_FCHOICE so that GYRO_SMPLRT_DIV is effective
 
-        self.device
-            .bank_2_gyro_config_1()
-            .modify_async(|w| {
-                w.set_gyro_fchoice(true);
-            })
-            .await?;
+            self.device
+                .bank_2_gyro_config_1()
+                .modify_async(|w| {
+                    w.set_gyro_fchoice(true);
+                })
+                .await?;
 
-        // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
-        self.device
-            .bank_2_gyro_smplrt_div()
-            .write_async(|w| {
-                w.set_gyro_smplrt_div(0);
-            })
-            .await?;
+            // Set gyroscope sample rate divider to 0 (1.1kHz internal rate)
+            self.device
+                .bank_2_gyro_smplrt_div()
+                .write_async(|w| {
+                    w.set_gyro_smplrt_div(0);
+                })
+                .await?;
 
-        // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
+            // Enable ACCEL_FCHOICE so that ACCEL_SMPLRT_DIV is effective
 
-        self.device
-            .bank_2_accel_config()
-            .modify_async(|w| {
-                w.set_accel_fchoice(true);
-            })
-            .await?;
+            self.device
+                .bank_2_accel_config()
+                .modify_async(|w| {
+                    w.set_accel_fchoice(true);
+                })
+                .await?;
 
-        // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
-        self.device
-            .bank_2_accel_smplrt_div()
-            .write_async(|w| {
-                w.set_accel_smplrt_div(0);
-            })
-            .await?;
+            // Set accelerometer sample rate divider to 0 (1.125kHz internal rate)
+            self.device
+                .bank_2_accel_smplrt_div()
+                .write_async(|w| {
+                    w.set_accel_smplrt_div(0);
+                })
+                .await?;
 
-        // Enable ODR_ALIGN_EN to synchronize sensor data streams
+            // Enable ODR_ALIGN_EN to synchronize sensor data streams
 
-        self.device
-            .bank_2_odr_align_en()
-            .write_async(|w| {
-                w.set_odr_align_en(true);
-            })
-            .await?;
+            self.device
+                .bank_2_odr_align_en()
+                .write_async(|w| {
+                    w.set_odr_align_en(true);
+                })
+                .await?;
 
-        // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
+            // Enable REG_LP_DMP_EN to allow DMP to receive internal sensor data
 
-        self.device
-            .bank_2_mod_ctrl_usr()
-            .write_async(|w| {
-                w.set_reg_lp_dmp_en(true);
-            })
-            .await?;
+            self.device
+                .bank_2_mod_ctrl_usr()
+                .write_async(|w| {
+                    w.set_reg_lp_dmp_en(true);
+                })
+                .await?;
 
-        self.select_bank(Bank::Bank0).await?;
+            self.select_bank(Bank::Bank0).await?;
 
-        // Load the firmware after configuring hardware
-        self.dmp_load_firmware(delay).await?;
+            // Load the firmware after configuring hardware
+            self.dmp_load_firmware(delay).await?;
 
-        // Wait for firmware to initialize
-        delay.delay_ms(2).await;
+            // Wait for firmware to initialize
+            delay.delay_ms(2).await;
 
-        Ok(())
+            Ok(())
+        })
+        .await;
+        if result.is_err() {
+            self.invalidate_dmp_state();
+        }
+        result
     }
 
     /// Reset the DMP processor
