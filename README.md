@@ -85,7 +85,8 @@ let interface = I2cInterface::default(i2c);
 // Create driver and verify
 let mut imu = Icm20948Driver::new(interface);
 imu.verify_who_am_i()?;
-imu.init()?;
+let mut delay = Delay; // provide a DelayNs implementation from your platform
+imu.init(&mut delay)?;
 
 // Configure accelerometer: ±2g range, 246 Hz DLPF
 let accel_config = AccelConfig {

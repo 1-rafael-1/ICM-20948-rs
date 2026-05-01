@@ -266,7 +266,7 @@ fn block_on<F: core::future::Future>(f: F) -> F::Output {
 }
 
 #[test]
-fn test_new_success() {
+fn test_verify_who_am_i_success() {
     block_on(async {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
@@ -278,13 +278,41 @@ fn test_new_success() {
 }
 
 #[test]
-fn test_new_invalid_who_am_i() {
+fn test_verify_who_am_i_invalid() {
     block_on(async {
         let i2c = MockAsyncI2c::with_invalid_who_am_i();
         let interface = I2cInterface::default(i2c);
 
         let mut imu = Icm20948Driver::new(interface);
         let result = imu.verify_who_am_i().await;
+        assert!(result.is_err());
+
+        if let Err(Error::InvalidDevice(value)) = result {
+            assert_eq!(value, 0xFF);
+        } else {
+            panic!("Expected InvalidDevice error");
+        }
+    });
+}
+
+#[test]
+fn test_try_new_success() {
+    block_on(async {
+        let i2c = MockAsyncI2c::new();
+        let interface = I2cInterface::default(i2c);
+
+        let result = Icm20948Driver::try_new(interface).await;
+        assert!(result.is_ok());
+    });
+}
+
+#[test]
+fn test_try_new_invalid_who_am_i() {
+    block_on(async {
+        let i2c = MockAsyncI2c::with_invalid_who_am_i();
+        let interface = I2cInterface::default(i2c);
+
+        let result = Icm20948Driver::try_new(interface).await;
         assert!(result.is_err());
 
         if let Err(Error::InvalidDevice(value)) = result {
