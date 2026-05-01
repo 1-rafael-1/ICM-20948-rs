@@ -56,7 +56,7 @@ async fn main(_spawner: Spawner) {
     let mut imu_int1 = Input::new(p.PIN_14, Pull::Down);
 
     let i2c_interface = I2cInterface::default(i2c);
-    let mut imu = match Icm20948Driver::new(i2c_interface) {
+    let mut imu = match Icm20948Driver::try_new(i2c_interface) {
         Ok(imu) => imu,
         Err(e) => {
             error!("IMU initialization failed: {:?}", e);

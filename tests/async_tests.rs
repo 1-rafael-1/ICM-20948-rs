@@ -78,6 +78,18 @@ impl embedded_hal::i2c::Error for MockError {
     }
 }
 
+type TestInterface = I2cInterface<MockAsyncI2c>;
+
+type TestDriver = Icm20948Driver<TestInterface>;
+
+async fn new_verified(interface: TestInterface) -> TestDriver {
+    let mut imu = Icm20948Driver::new(interface);
+    imu.verify_who_am_i()
+        .await
+        .expect("Failed to verify WHO_AM_I");
+    imu
+}
+
 impl embedded_hal_async::i2c::ErrorType for MockAsyncI2c {
     type Error = MockError;
 }
@@ -259,7 +271,8 @@ fn test_new_success() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let result = Icm20948Driver::new(interface).await;
+        let mut imu = Icm20948Driver::new(interface);
+        let result = imu.verify_who_am_i().await;
         assert!(result.is_ok());
     });
 }
@@ -270,7 +283,8 @@ fn test_new_invalid_who_am_i() {
         let i2c = MockAsyncI2c::with_invalid_who_am_i();
         let interface = I2cInterface::default(i2c);
 
-        let result = Icm20948Driver::new(interface).await;
+        let mut imu = Icm20948Driver::new(interface);
+        let result = imu.verify_who_am_i().await;
         assert!(result.is_err());
 
         if let Err(Error::InvalidDevice(value)) = result {
@@ -287,9 +301,7 @@ fn test_init() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
         let result = imu.init(&mut delay).await;
@@ -303,9 +315,7 @@ fn test_select_bank() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Test switching between banks
         assert!(imu.select_bank(Bank::Bank0).await.is_ok());
@@ -324,9 +334,7 @@ fn test_read_who_am_i() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let who_am_i = imu.read_who_am_i().await.expect("Failed to read WHO_AM_I");
         assert_eq!(who_am_i, WHO_AM_I_VALUE);
@@ -339,9 +347,7 @@ fn test_read_temperature() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read raw temperature
         let result = imu.read_temperature().await;
@@ -359,9 +365,7 @@ fn test_configure_accelerometer() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let config = AccelConfig {
             full_scale: AccelFullScale::G2,
@@ -381,9 +385,7 @@ fn test_configure_gyroscope() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let config = GyroConfig {
             full_scale: GyroFullScale::Dps250,
@@ -403,9 +405,7 @@ fn test_read_accelerometer() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read raw data
         let result = imu.read_accelerometer_raw().await;
@@ -423,9 +423,7 @@ fn test_read_gyroscope() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read raw data
         let result = imu.read_gyroscope_raw().await;
@@ -447,9 +445,7 @@ fn test_set_sleep() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Enter sleep mode
         assert!(imu.set_sleep(true).await.is_ok());
@@ -465,9 +461,7 @@ fn test_set_dmp_enable() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         #[cfg(feature = "dmp")]
         {
@@ -518,9 +512,7 @@ fn test_set_fifo_enable() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Enable FIFO
         assert!(imu.set_fifo_enable(true).await.is_ok());
@@ -538,9 +530,7 @@ fn test_fifo_configure() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let config = FifoConfig {
             enable_accel: true,
@@ -561,9 +551,7 @@ fn test_fifo_configure_advanced() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let config = FifoConfigAdvanced {
             enable_accel: true,
@@ -589,9 +577,7 @@ fn test_fifo_enable() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Enable FIFO
         assert!(imu.fifo_enable(true).await.is_ok());
@@ -607,9 +593,7 @@ fn test_fifo_reset() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.fifo_reset().await;
         assert!(result.is_ok());
@@ -622,9 +606,7 @@ fn test_fifo_count() {
         let i2c = MockAsyncI2c::with_fifo_data(120);
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let count = imu.fifo_count().await.expect("Failed to read FIFO count");
         assert_eq!(count, 120);
@@ -637,9 +619,7 @@ fn test_fifo_read() {
         let i2c = MockAsyncI2c::with_fifo_data(24); // 2 samples worth
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut buffer = [0u8; 24];
         let bytes_read = imu
@@ -658,9 +638,7 @@ fn test_fifo_overflow_status() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let status = imu
             .fifo_overflow_status()
@@ -691,9 +669,7 @@ fn test_fifo_parse() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let imu = new_verified(interface).await;
 
         let config = FifoConfigAdvanced {
             enable_accel: true,
@@ -737,9 +713,7 @@ fn test_fifo_full_workflow() {
         let i2c = MockAsyncI2c::with_fifo_data(120); // 10 samples
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Configure FIFO
         let config = FifoConfig {
@@ -785,9 +759,7 @@ fn test_dmp_reset() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.dmp_reset().await;
         assert!(result.is_ok());
@@ -801,9 +773,7 @@ fn test_dmp_enable() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Enable without firmware should fail
         assert!(matches!(
@@ -845,9 +815,7 @@ fn test_dmp_load_firmware() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
         let result = imu.dmp_load_firmware(&mut delay).await;
@@ -862,9 +830,7 @@ fn test_dmp_init() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
         let result = imu.dmp_init(&mut delay).await;
@@ -879,9 +845,7 @@ fn test_dmp_configure() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
         imu.dmp_load_firmware(&mut delay)
@@ -904,9 +868,7 @@ fn test_dmp_configure_requires_mag_init_for_mag_outputs_async() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
         imu.dmp_load_firmware(&mut delay)
@@ -929,9 +891,7 @@ fn test_read_fifo_count() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.read_fifo_count().await;
         assert!(result.is_ok());
@@ -948,9 +908,7 @@ fn test_read_fifo_raw() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut buffer = [0u8; 64];
         let result = imu.read_fifo_raw(&mut buffer).await;
@@ -968,9 +926,7 @@ fn test_reset_fifo() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.reset_fifo().await;
         assert!(result.is_ok());
@@ -984,9 +940,7 @@ fn test_dmp_read_fifo_empty() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.dmp_read_fifo().await;
         assert!(result.is_ok());
@@ -1003,9 +957,7 @@ fn test_dmp_read_quaternion_empty() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.dmp_read_quaternion().await;
         assert!(result.is_ok());
@@ -1022,9 +974,7 @@ fn test_dmp_full_workflow() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
 
@@ -1068,9 +1018,7 @@ fn test_magnetometer_init() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
 
@@ -1090,9 +1038,7 @@ fn test_magnetometer_read() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read without initialization should fail
         let result = imu.read_magnetometer().await;
@@ -1106,9 +1052,7 @@ fn test_magnetometer_read_raw() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read without initialization should fail
         let result = imu.read_magnetometer_raw().await;
@@ -1122,9 +1066,7 @@ fn test_magnetometer_heading() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read without initialization should fail
         let result = imu.read_magnetometer_heading().await;
@@ -1138,9 +1080,7 @@ fn test_magnetometer_heading_compensated() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Read without initialization should fail
         let result = imu
@@ -1156,9 +1096,7 @@ fn test_magnetometer_data_ready() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Check data ready status - returns false when not initialized
         let result = imu.magnetometer_data_ready().await;
@@ -1173,9 +1111,7 @@ fn test_accelerometer_self_test_async() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Initialize the device
         let mut delay = MockDelay;
@@ -1211,9 +1147,7 @@ fn test_gyroscope_self_test_async() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Initialize the device
         let mut delay = MockDelay;
@@ -1249,9 +1183,7 @@ fn test_magnetometer_self_test() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
 
@@ -1267,9 +1199,7 @@ fn test_self_test_restores_sensor_state_async() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Initialize the device
         let mut delay = MockDelay;
@@ -1306,9 +1236,7 @@ fn test_multiple_self_tests_sequence_async() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Initialize the device
         let mut delay = MockDelay;
@@ -1355,9 +1283,7 @@ fn test_configure_interrupt_pin() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let pin_config = InterruptPinConfig::i2c_default();
         let result = imu.configure_interrupt_pin(&pin_config).await;
@@ -1371,9 +1297,7 @@ fn test_configure_interrupts() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let int_config = InterruptConfig::data_ready_only();
         let result = imu.configure_interrupts(&int_config).await;
@@ -1387,9 +1311,7 @@ fn test_read_interrupt_status() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.read_interrupt_status().await;
         assert!(result.is_ok());
@@ -1402,9 +1324,7 @@ fn test_read_data_ready_status() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.read_data_ready_status().await;
         assert!(result.is_ok());
@@ -1419,9 +1339,7 @@ fn test_set_power_mode() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let mut delay = MockDelay;
 
@@ -1445,9 +1363,7 @@ fn test_enter_low_power_mode() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let lp_config = LowPowerConfig {
             accel_rate: LowPowerRate::Hz31_25,
@@ -1468,9 +1384,7 @@ fn test_exit_low_power_mode() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.exit_low_power_mode().await;
         assert!(result.is_ok());
@@ -1483,9 +1397,7 @@ fn test_configure_cycle_mode() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let cycle_config = CycleConfig {
             enable_accel_cycle: true,
@@ -1504,9 +1416,7 @@ fn test_set_clock_source() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.set_clock_source(ClockSource::AutoSelect).await;
         assert!(result.is_ok());
@@ -1519,9 +1429,7 @@ fn test_set_temperature_sensor() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         // Enable temperature sensor
         let result = imu.set_temperature_sensor(true).await;
@@ -1539,9 +1447,7 @@ fn test_configure_sensor_power() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let power_config = SensorPowerConfig::all_enabled();
         let result = imu.configure_sensor_power(&power_config).await;
@@ -1555,9 +1461,7 @@ fn test_read_power_status() {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
-        let mut imu = Icm20948Driver::new(interface)
-            .await
-            .expect("Failed to create driver");
+        let mut imu = new_verified(interface).await;
 
         let result = imu.read_power_status().await;
         assert!(result.is_ok());

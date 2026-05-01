@@ -27,7 +27,8 @@ impl<I2C> I2cInterface<I2C> {
     /// # Example
     /// ```ignore
     /// let interface = I2cInterface::default(i2c);
-    /// let mut imu = Icm20948Driver::new(interface)?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i()?;
     /// ```
     pub const fn default(i2c: I2C) -> Self {
         Self {
@@ -46,7 +47,8 @@ impl<I2C> I2cInterface<I2C> {
     /// # Example
     /// ```ignore
     /// let interface = I2cInterface::alternative(i2c);
-    /// let mut imu = Icm20948Driver::new(interface)?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i()?;
     /// ```
     pub const fn alternative(i2c: I2C) -> Self {
         Self {

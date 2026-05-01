@@ -43,7 +43,7 @@ async fn main(_spawner: Spawner) {
 
     let mut imu_int1 = ExtiInput::new(p.PA3, p.EXTI3, Pull::Down, SpiIrqs);
 
-    let mut imu = Icm20948Driver::new(SpiInterface::new(spi_device))
+    let mut imu = Icm20948Driver::try_new(SpiInterface::new(spi_device))
         .await
         .unwrap();
     let mut delay = Delay;

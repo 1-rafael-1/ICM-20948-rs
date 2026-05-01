@@ -88,17 +88,12 @@ where
 {
     /// Create a new ICM-20948 driver instance
     ///
-    /// This will verify the `WHO_AM_I` register but will not initialize the device.
-    /// Call `init()` after construction to configure the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Communication with the device fails
-    /// - The `WHO_AM_I` register contains an unexpected value
-    pub fn new(interface: I) -> Result<Self, Error<I::Error>> {
+    /// This constructor is infallible and performs no bus I/O.
+    /// Call [`verify_who_am_i`](Self::verify_who_am_i) to confirm communication,
+    /// then call `init()` to configure the device.
+    pub fn new(interface: I) -> Self {
         let device = RegisterDevice::new(interface);
-        let mut driver = Self {
+        Self {
             device,
             current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
@@ -114,16 +109,17 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
-        };
-
-        // Verify WHO_AM_I
-        driver.select_bank(Bank::Bank0)?;
-        let who_am_i = driver.read_who_am_i()?;
-
-        if who_am_i != WHO_AM_I_VALUE {
-            return Err(Error::InvalidDevice(who_am_i));
         }
+    }
 
+    /// Create a new driver and immediately verify the device identity
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub fn try_new(interface: I) -> Result<Self, Error<I::Error>> {
+        let mut driver = Self::new(interface);
+        driver.verify_who_am_i()?;
         Ok(driver)
     }
 
@@ -162,6 +158,10 @@ where
     ///
     /// This is a stronger recovery path intended for retries after a failed init
     /// or when the device may have been left in an unknown state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or reset does not complete.
     pub fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
     where
         D: embedded_hal::delay::DelayNs,
@@ -254,7 +254,8 @@ where
     /// let interface = SpiInterface::new(spi_device);
     ///
     /// // Create and initialize driver
-    /// let mut imu = Icm20948Driver::new(interface)?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i()?;
     /// imu.init(&mut delay)?;
     ///
     /// // Enable SPI mode (required!)
@@ -301,6 +302,19 @@ where
         self.select_bank(Bank::Bank0)?;
         let reg = self.device.who_am_i().read()?;
         Ok(reg.who_am_i())
+    }
+
+    /// Verify the `WHO_AM_I` register against the expected value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub fn verify_who_am_i(&mut self) -> Result<(), Error<I::Error>> {
+        let who_am_i = self.read_who_am_i()?;
+        if who_am_i != WHO_AM_I_VALUE {
+            return Err(Error::InvalidDevice(who_am_i));
+        }
+        Ok(())
     }
 
     /// Read accelerometer data
@@ -462,7 +476,7 @@ where
     // Digital Motion Processor support (requires "dmp" feature)
 
     #[cfg(feature = "dmp")]
-    fn invalidate_dmp_state(&mut self) {
+    const fn invalidate_dmp_state(&mut self) {
         self.current_bank = None;
         self.dmp_firmware_loaded = false;
         self.dmp_configured = false;
@@ -1340,7 +1354,7 @@ where
     #[cfg(feature = "dmp")]
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+        use crate::dmp::config::DmpPacketSize;
 
         let overflow = self.fifo_overflow_status()?;
         if overflow.any_overflow() {
@@ -1361,6 +1375,7 @@ where
 
         #[cfg(feature = "defmt")]
         if self.dmp_packet_size > 2 {
+            use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
                 "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
@@ -4294,17 +4309,12 @@ where
 {
     /// Create a new ICM-20948 driver instance
     ///
-    /// This will verify the `WHO_AM_I` register but will not initialize the device.
-    /// Call `init()` after construction to configure the device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Communication with the device fails
-    /// - The `WHO_AM_I` register contains an unexpected value
-    pub async fn new(interface: I) -> Result<Self, Error<I::Error>> {
+    /// This constructor is infallible and performs no bus I/O.
+    /// Call [`verify_who_am_i`](Self::verify_who_am_i) to confirm communication,
+    /// then call `init()` to configure the device.
+    pub fn new(interface: I) -> Self {
         let device = RegisterDevice::new(interface);
-        let mut driver = Self {
+        Self {
             device,
             current_bank: None,
             accel_config: crate::sensors::AccelConfig::default(),
@@ -4320,16 +4330,17 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
-        };
-
-        // Verify WHO_AM_I
-        driver.select_bank(Bank::Bank0).await?;
-        let who_am_i = driver.read_who_am_i().await?;
-
-        if who_am_i != WHO_AM_I_VALUE {
-            return Err(Error::InvalidDevice(who_am_i));
         }
+    }
 
+    /// Create a new driver and immediately verify the device identity
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub async fn try_new(interface: I) -> Result<Self, Error<I::Error>> {
+        let mut driver = Self::new(interface);
+        driver.verify_who_am_i().await?;
         Ok(driver)
     }
 
@@ -4368,6 +4379,10 @@ where
     ///
     /// This is a stronger recovery path intended for retries after a failed init
     /// or when the device may have been left in an unknown state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or reset does not complete.
     pub async fn reinit<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
     where
         D: embedded_hal_async::delay::DelayNs,
@@ -4492,7 +4507,8 @@ where
     /// let interface = SpiInterface::new(spi_device);
     ///
     /// // Create and initialize driver
-    /// let mut imu = Icm20948Driver::new(interface).await?;
+    /// let mut imu = Icm20948Driver::new(interface);
+    /// imu.verify_who_am_i().await?;
     /// imu.init(&mut delay).await?;
     ///
     /// // Enable SPI mode (required!)
@@ -4523,6 +4539,19 @@ where
         self.select_bank(Bank::Bank0).await?;
         let reg = self.device.who_am_i().read_async().await?;
         Ok(reg.who_am_i())
+    }
+
+    /// Verify the `WHO_AM_I` register against the expected value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication fails or the device ID is unexpected.
+    pub async fn verify_who_am_i(&mut self) -> Result<(), Error<I::Error>> {
+        let who_am_i = self.read_who_am_i().await?;
+        if who_am_i != WHO_AM_I_VALUE {
+            return Err(Error::InvalidDevice(who_am_i));
+        }
+        Ok(())
     }
 
     /// Read the `LP_CONFIG` register as a raw byte (async version)
@@ -5551,7 +5580,7 @@ where
     }
 
     #[cfg(feature = "dmp")]
-    fn invalidate_dmp_state(&mut self) {
+    const fn invalidate_dmp_state(&mut self) {
         self.current_bank = None;
         self.dmp_firmware_loaded = false;
         self.dmp_configured = false;
@@ -6476,7 +6505,7 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
+        use crate::dmp::config::DmpPacketSize;
 
         let overflow = self.fifo_overflow_status().await?;
         if overflow.any_overflow() {
@@ -6498,6 +6527,7 @@ where
 
         #[cfg(feature = "defmt")]
         if self.dmp_packet_size > 2 {
+            use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
                 "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",

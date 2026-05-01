@@ -47,7 +47,7 @@ impl embedded_hal_async::delay::DelayNs for MockDelay {
 pub fn create_mock_driver() -> (Icm20948Driver<MockInterface>, MockInterface) {
     let interface = MockInterface::new();
     let interface_clone = interface.clone();
-    let driver = Icm20948Driver::new(interface).expect("Failed to create mock driver");
+    let driver = Icm20948Driver::try_new(interface).expect("Failed to create mock driver");
     (driver, interface_clone)
 }
 

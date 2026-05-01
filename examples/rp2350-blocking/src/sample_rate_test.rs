@@ -72,7 +72,7 @@ async fn main(_spawner: Spawner) {
     // Create and initialize sensor
     info!("Initializing ICM-20948...");
     let i2c_interface = I2cInterface::default(i2c);
-    let mut sensor = match Icm20948Driver::new(i2c_interface) {
+    let mut sensor = match Icm20948Driver::try_new(i2c_interface) {
         Ok(sensor) => {
             info!("✓ ICM-20948 detected!");
             sensor

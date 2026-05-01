@@ -82,8 +82,9 @@ use icm20948::sensors::{GyroConfig, GyroFullScale, GyroDlpf};
 // Create I2C interface with default address (0x68, AD0 pin LOW)
 let interface = I2cInterface::default(i2c);
 
-// Create driver and initialize
-let mut imu = Icm20948Driver::new(interface)?;
+// Create driver and verify
+let mut imu = Icm20948Driver::new(interface);
+imu.verify_who_am_i()?;
 imu.init()?;
 
 // Configure accelerometer: ±2g range, 246 Hz DLPF

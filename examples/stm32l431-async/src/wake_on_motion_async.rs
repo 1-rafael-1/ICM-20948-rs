@@ -45,7 +45,7 @@ async fn main(_spawner: Spawner) {
 
     let mut imu_int1 = ExtiInput::new(p.PA3, p.EXTI3, Pull::Down, SpiIrqs);
 
-    let mut imu = match Icm20948Driver::new(SpiInterface::new(spi_device)).await {
+    let mut imu = match Icm20948Driver::try_new(SpiInterface::new(spi_device)).await {
         Ok(driver) => driver,
         Err(e) => {
             error!("IMU initialization failed: {:?}", e);
