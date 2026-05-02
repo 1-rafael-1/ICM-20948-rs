@@ -139,7 +139,7 @@ pub enum DmpFusionMode {
     /// Pedometer-fused 6-axis quaternion (`PQuat6`).
     ///
     /// Runs the DMP's pedestrian-optimised fusion algorithm using accelerometer and
-    /// gyroscope. Unlike [`SixAxis`] (which runs at a fixed sample rate), PQuat6 output
+    /// gyroscope. Unlike [`Self::SixAxis`] (which runs at a fixed sample rate), PQuat6 output
     /// is cadence-locked: orientation packets are only emitted during active walking and
     /// the output rate follows the pedestrian motion cadence.
     ///
