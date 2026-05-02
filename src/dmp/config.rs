@@ -1032,9 +1032,6 @@ impl DmpConfig {
         if self.step_detector {
             f.insert(DmpFeatures::STEP_DETECTOR);
         }
-        if self.step_counter {
-            f.insert(DmpFeatures::STEP_COUNTER);
-        }
 
         f
     }

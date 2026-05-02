@@ -1034,12 +1034,11 @@ where
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// # use icm20948::{Icm20948Driver, I2cInterface};
-    /// # let mut driver: Icm20948Driver<I2cInterface<_>> = todo!();
+    /// ```ignore
+    /// # let mut driver: icm20948::Icm20948Driver<_> = todo!();
     /// // Set watermark to 16 bytes (typical quaternion packet size)
     /// driver.set_dmp_fifo_watermark(16)?;
-    /// # Ok::<(), icm20948::Error<_>>(())
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn set_dmp_fifo_watermark(&mut self, watermark: u16) -> Result<(), Error<I::Error>> {
         use crate::dmp::config::DmpMemoryAddresses;
@@ -1058,12 +1057,11 @@ where
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// # use icm20948::{Icm20948Driver, I2cInterface};
-    /// # let mut driver: Icm20948Driver<I2cInterface<_>> = todo!();
+    /// ```ignore
+    /// # let mut driver: icm20948::Icm20948Driver<_> = todo!();
     /// let watermark = driver.get_dmp_fifo_watermark()?;
     /// println!("Current watermark: {} bytes", watermark);
-    /// # Ok::<(), icm20948::Error<_>>(())
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn get_dmp_fifo_watermark(&mut self) -> Result<u16, Error<I::Error>> {
         use crate::dmp::config::DmpMemoryAddresses;
@@ -1088,12 +1086,11 @@ where
     ///
     /// # Example
     ///
-    /// ```no_run
-    /// # use icm20948::{Icm20948Driver, I2cInterface};
-    /// # let mut driver: Icm20948Driver<I2cInterface<_>> = todo!();
+    /// ```ignore
+    /// # let mut driver: icm20948::Icm20948Driver<_> = todo!();
     /// // Enable DMP data ready interrupt
     /// driver.set_dmp_interrupt_enable(true)?;
-    /// # Ok::<(), icm20948::Error<_>>(())
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn set_dmp_interrupt_enable(&mut self, enable: bool) -> Result<(), Error<I::Error>> {
         self.select_bank(Bank::Bank0)?;
@@ -1504,9 +1501,9 @@ where
         //     let reg = self.device.mem_rw().read()?;
         //     *byte = reg.mem_r_w();
         // }
-        // size_bits is ignored by the RegisterInterface implementation;
-        // the actual transfer length is determined by buffer.len().
-        self.device.interface.read_register(0x7D, 0, buffer)?;
+        // size_bits is set to 8 because MEM_R_W (0x7D) is an 8-bit data window;
+        // the actual number of bytes transferred is determined by buffer.len().
+        self.device.interface.read_register(0x7D, 8, buffer)?;
 
         Ok(())
     }
@@ -6549,9 +6546,9 @@ where
         //     *byte = reg.mem_r_w();
         // }
 
-        // size_bits is ignored by the RegisterInterface implementation;
-        // the actual transfer length is determined by buffer.len().
-        self.device.interface.read_register(0x7D, 0, buffer).await?;
+        // size_bits is set to 8 because MEM_R_W (0x7D) is an 8-bit data window;
+        // the actual number of bytes transferred is determined by buffer.len().
+        self.device.interface.read_register(0x7D, 8, buffer).await?;
         Ok(())
     }
 

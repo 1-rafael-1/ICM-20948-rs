@@ -62,7 +62,7 @@
 //! # let mut driver: Icm20948Driver<_> = todo!();
 //! driver.dmp_init()?;
 //!
-//! // PQuat6 orientation + step-event timestamps in every FIFO packet
+//! // PQuat6 orientation — cadence-locked, present only during active walking
 //! let config = DmpConfig::pedometer_six_axis()
 //!     .with_step_detector()
 //!     .with_sample_rate(56);
@@ -181,9 +181,6 @@ pub struct DmpConfig {
     /// Enable pedometer step detector (triggers an event on step)
     pub step_detector: bool,
 
-    /// Enable pedometer step counter (tracks total steps)
-    pub step_counter: bool,
-
     // /// Enable significant motion detection (not implemented yet)
     // pub significant_motion: bool,
 
@@ -219,7 +216,6 @@ impl DmpConfig {
             raw_gyro: false,
             raw_mag: false,
             step_detector: false,
-            step_counter: false,
             sample_rate: 100,
         }
     }
@@ -314,27 +310,6 @@ impl DmpConfig {
     /// Can be combined with any fusion mode, including [`DmpConfig::pedometer_six_axis()`].
     pub const fn with_step_detector(mut self) -> Self {
         self.step_detector = true;
-        self
-    }
-
-    /// Enable the pedometer step counter.
-    ///
-    /// # Deprecation notice
-    ///
-    /// This method sets the **same** `STEP_DETECTOR` hardware bit in
-    /// `DATA_OUT_CTL1` as [`with_step_detector()`](Self::with_step_detector).
-    /// There is no hardware difference between the two calls. Prefer
-    /// [`with_step_detector()`](Self::with_step_detector), which has the same
-    /// effect and clearer semantics.
-    ///
-    /// This alias is retained for source compatibility and will be removed in a
-    /// future version.
-    #[deprecated(
-        since = "0.3.0",
-        note = "sets the same hardware bit as `with_step_detector()`; use that instead"
-    )]
-    pub const fn with_step_counter(mut self) -> Self {
-        self.step_counter = true;
         self
     }
 

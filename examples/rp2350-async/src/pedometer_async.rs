@@ -1,8 +1,10 @@
 //! Pedometer Example for ICM-20948 on Raspberry Pi Pico 2 (Async version)
 //!
 //! This example demonstrates the ICM-20948 DMP pedometer in async mode. It enables
-//! pedometer-fused 6-axis quaternion output (`PQuat6`) and step-event detection,
-//! then reads both from a single `dmp_read_fifo()` call per interrupt.
+//! pedometer-fused 6-axis quaternion output (`PQuat6`) and step-event detection.
+//! On each interrupt, orientation data is read via `dmp_read_fifo()` and, when a
+//! step event is present, the cumulative step count is retrieved via a separate
+//! `dmp_read_step_count()` SRAM transaction (the two-call pattern).
 //!
 //! ## Two Outputs
 //!
