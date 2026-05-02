@@ -1504,9 +1504,90 @@ where
         //     let reg = self.device.mem_rw().read()?;
         //     *byte = reg.mem_r_w();
         // }
-        self.device.interface.read_register(0x7D, 8, buffer)?;
+        // size_bits is ignored by the RegisterInterface implementation;
+        // the actual transfer length is determined by buffer.len().
+        self.device.interface.read_register(0x7D, 0, buffer)?;
 
         Ok(())
+    }
+
+    #[cfg(feature = "dmp")]
+    /// Read the cumulative step count from DMP SRAM.
+    ///
+    /// The DMP pedometer accumulates a step count at memory address `PEDSTD_STEPCTR`
+    /// (0x0360). This value is **not** delivered through the FIFO — it must be polled
+    /// explicitly, typically after detecting a step event (i.e. when
+    /// `DmpData::pedometer_timestamp` is `Some` in a packet returned by
+    /// [`dmp_read_fifo()`](Self::dmp_read_fifo)).
+    ///
+    /// # Returns
+    ///
+    /// The total number of steps counted since the last DMP reset, as a `u32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication with the device fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(packet) = driver.dmp_read_fifo()? {
+    ///     if packet.pedometer_timestamp.is_some() {
+    ///         let steps = driver.dmp_read_step_count()?;
+    ///         println!("Total steps: {}", steps);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Note on timing
+    ///
+    /// `dmp_read_step_count()` reads DMP SRAM in a separate I2C transaction
+    /// from `dmp_read_fifo()`. If a second step occurs between the two calls,
+    /// the returned count will be one ahead of the step described by the FIFO
+    /// timestamp. For most applications this difference is negligible.
+    ///
+    /// # Counter lifecycle
+    ///
+    /// The counter starts at zero after firmware load (`dmp_init()`) and
+    /// increments monotonically. There is **no** `dmp_reset_step_count()`
+    /// function; the only way to reset the counter is to reinitialise the DMP
+    /// entirely via `dmp_init()`.
+    ///
+    /// Calling `dmp_enable(false)` / `dmp_enable(true)` does **not** reset
+    /// the counter.
+    ///
+    /// **Per-session step counts:** capture a baseline at session start and subtract:
+    ///
+    /// ```ignore
+    /// let baseline = driver.dmp_read_step_count()?;
+    /// // ... at session end ...
+    /// let session_steps = driver.dmp_read_step_count()? - baseline;
+    /// ```
+    ///
+    /// # Caveats — shared SRAM, non-atomic read
+    ///
+    /// The DMP firmware and the host share the same SRAM bus without hardware
+    /// arbitration. Reading the 4-byte counter requires three I2C transactions
+    /// (bank select → address write → data burst). In the ~180 µs window between
+    /// the address write and the data read, the DMP can increment the counter,
+    /// producing a torn (partially-updated) value.
+    ///
+    /// At normal walking cadence (~2 steps/sec) the probability per call is
+    /// ~0.04 %. Applications that require exact counts can mitigate by reading
+    /// the counter twice and accepting the result only when both reads agree:
+    ///
+    /// ```ignore
+    /// loop {
+    ///     let a = driver.dmp_read_step_count()?;
+    ///     let b = driver.dmp_read_step_count()?;
+    ///     if a == b { break a; }
+    /// }
+    /// ```
+    pub fn dmp_read_step_count(&mut self) -> Result<u32, Error<I::Error>> {
+        use crate::dmp::config::DmpMemoryAddresses;
+        let mut buf = [0u8; 4];
+        self.read_dmp_memory(DmpMemoryAddresses::PEDSTD_STEPCTR, &mut buf)?;
+        Ok(u32::from_be_bytes(buf))
     }
 
     /// Read the `USER_CTRL` register value
@@ -6468,8 +6549,90 @@ where
         //     *byte = reg.mem_r_w();
         // }
 
-        self.device.interface.read_register(0x7D, 8, buffer).await?;
+        // size_bits is ignored by the RegisterInterface implementation;
+        // the actual transfer length is determined by buffer.len().
+        self.device.interface.read_register(0x7D, 0, buffer).await?;
         Ok(())
+    }
+
+    #[cfg(feature = "dmp")]
+    /// Read the cumulative step count from DMP SRAM (async version).
+    ///
+    /// The DMP pedometer accumulates a step count at memory address `PEDSTD_STEPCTR`
+    /// (0x0360). This value is **not** delivered through the FIFO — it must be polled
+    /// explicitly, typically after detecting a step event (i.e. when
+    /// `DmpData::pedometer_timestamp` is `Some` in a packet returned by
+    /// [`dmp_read_fifo()`](Self::dmp_read_fifo)).
+    ///
+    /// # Returns
+    ///
+    /// The total number of steps counted since the last DMP reset, as a `u32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication with the device fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(packet) = driver.dmp_read_fifo().await? {
+    ///     if packet.pedometer_timestamp.is_some() {
+    ///         let steps = driver.dmp_read_step_count().await?;
+    ///         info!("Total steps: {}", steps);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Note on timing
+    ///
+    /// `dmp_read_step_count()` reads DMP SRAM in a separate I2C transaction
+    /// from `dmp_read_fifo()`. If a second step occurs between the two calls,
+    /// the returned count will be one ahead of the step described by the FIFO
+    /// timestamp. For most applications this difference is negligible.
+    ///
+    /// # Counter lifecycle
+    ///
+    /// The counter starts at zero after firmware load (`dmp_init()`) and
+    /// increments monotonically. There is **no** `dmp_reset_step_count()`
+    /// function; the only way to reset the counter is to reinitialise the DMP
+    /// entirely via `dmp_init()`.
+    ///
+    /// Calling `dmp_enable(false)` / `dmp_enable(true)` does **not** reset
+    /// the counter.
+    ///
+    /// **Per-session step counts:** capture a baseline at session start and subtract:
+    ///
+    /// ```ignore
+    /// let baseline = driver.dmp_read_step_count().await?;
+    /// // ... at session end ...
+    /// let session_steps = driver.dmp_read_step_count().await? - baseline;
+    /// ```
+    ///
+    /// # Caveats — shared SRAM, non-atomic read
+    ///
+    /// The DMP firmware and the host share the same SRAM bus without hardware
+    /// arbitration. Reading the 4-byte counter requires three I2C transactions
+    /// (bank select → address write → data burst). In the ~180 µs window between
+    /// the address write and the data read, the DMP can increment the counter,
+    /// producing a torn (partially-updated) value.
+    ///
+    /// At normal walking cadence (~2 steps/sec) the probability per call is
+    /// ~0.04 %. Applications that require exact counts can mitigate by reading
+    /// the counter twice and accepting the result only when both reads agree:
+    ///
+    /// ```ignore
+    /// loop {
+    ///     let a = driver.dmp_read_step_count().await?;
+    ///     let b = driver.dmp_read_step_count().await?;
+    ///     if a == b { break a; }
+    /// }
+    /// ```
+    pub async fn dmp_read_step_count(&mut self) -> Result<u32, Error<I::Error>> {
+        use crate::dmp::config::DmpMemoryAddresses;
+        let mut buf = [0u8; 4];
+        self.read_dmp_memory_async(DmpMemoryAddresses::PEDSTD_STEPCTR, &mut buf)
+            .await?;
+        Ok(u32::from_be_bytes(buf))
     }
 
     /// Read DMP data from FIFO

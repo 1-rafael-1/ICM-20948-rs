@@ -392,7 +392,7 @@ impl DmpParser {
             return None;
         }
 
-        // PQUAT6 提取 3 × 16-bit values (big-endian)
+        // PQUAT6: extract 3 × 16-bit signed integers (big-endian, Q14 fixed-point format)
         let qx = i16::from_be_bytes([data[0], data[1]]);
         let qy = i16::from_be_bytes([data[2], data[3]]);
         let qz = i16::from_be_bytes([data[4], data[5]]);
