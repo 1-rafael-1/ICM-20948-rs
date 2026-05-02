@@ -47,7 +47,7 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Timer};
-use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
+use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
 use panic_probe as _;
 
 /// Firmware image type required by the RP2350 bootloader.
@@ -212,7 +212,7 @@ async fn main(_spawner: Spawner) {
             }
 
             // Periodic heartbeat so there is visible output even when stationary.
-            if packet_count % 50 == 0 {
+            if packet_count.is_multiple_of(50) {
                 info!("[pedometer] Packets received: {}", packet_count);
             }
         }

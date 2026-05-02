@@ -129,6 +129,6 @@ path = "src/dmp_integration_6axis_async.rs"
 required-features = ["dmp"]
 
 [[bin]]
-name = "pedometer_async"
-path = "src/pedometer_async.rs"
+name = "dmp_pedometer_async"
+path = "src/dmp_pedometer_async.rs"
 required-features = ["dmp"]
