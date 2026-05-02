@@ -266,9 +266,17 @@ impl DmpConfig {
 
     /// Set the DMP output sample rate in Hz.
     ///
-    /// Valid range is 1–225 Hz. Values outside this range are clamped to the maximum.
+    /// Valid range is 1–225 Hz. Values of 0 are clamped to 1; values above 225 are
+    /// clamped to 225. This ensures that both the sample-rate divider and the
+    /// calibration-parameter lookup always see the same effective rate.
     pub const fn with_sample_rate(mut self, rate: u16) -> Self {
-        self.sample_rate = rate;
+        self.sample_rate = if rate == 0 {
+            1
+        } else if rate > 225 {
+            225
+        } else {
+            rate
+        };
         self
     }
 }

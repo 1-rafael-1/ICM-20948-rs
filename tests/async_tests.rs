@@ -512,9 +512,7 @@ fn test_set_dmp_enable() {
             ));
 
             // Configure (6-axis, no magnetometer required)
-            let config = DmpConfig::new()
-                .with_quaternion_6axis(true)
-                .with_sample_rate(100);
+            let config = DmpConfig::six_axis().with_sample_rate(100);
 
             imu.dmp_configure(&config)
                 .await
@@ -822,9 +820,7 @@ fn test_dmp_enable() {
         ));
 
         // Configure (6-axis, no magnetometer required)
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(100);
 
         imu.dmp_configure(&config)
             .await
@@ -880,9 +876,7 @@ fn test_dmp_configure() {
             .await
             .expect("Firmware load failed");
 
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(100);
 
         let result = imu.dmp_configure(&config).await;
         assert!(result.is_ok());
@@ -903,9 +897,7 @@ fn test_dmp_configure_requires_mag_init_for_mag_outputs_async() {
             .await
             .expect("Firmware load failed");
 
-        let config = DmpConfig::new()
-            .with_quaternion_9axis(true)
-            .with_sample_rate(100);
+        let config = DmpConfig::nine_axis().with_sample_rate(100);
 
         let result = imu.dmp_configure(&config).await;
         assert!(matches!(result, Err(Error::MagnetometerNotInitialized)));
@@ -1011,13 +1003,10 @@ fn test_dmp_full_workflow() {
             .await
             .expect("Failed to initialize DMP");
 
-        imu.dmp_init_magnetometer(&mut delay)
-            .await
-            .expect("Failed to init magnetometer for DMP");
-
-        let config = DmpConfig::new()
-            .with_quaternion_9axis(true)
-            .with_sample_rate(100);
+        // Use 6-axis (no magnetometer required) so the mock can complete the full workflow.
+        // 9-axis magnetometer-init requirements are covered by
+        // `test_dmp_configure_requires_mag_init_for_mag_outputs_async`.
+        let config = DmpConfig::six_axis().with_sample_rate(100);
 
         imu.dmp_configure(&config)
             .await

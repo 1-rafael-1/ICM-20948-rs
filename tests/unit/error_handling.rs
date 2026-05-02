@@ -226,18 +226,20 @@ fn test_alternating_failures() {
 
 #[test]
 fn test_error_during_initialization() {
-    let (_driver, interface) = create_mock_driver();
+    use crate::common::mock_interface::MockInterface;
+    use icm20948::Icm20948Driver;
 
-    // Inject failure before init
+    // Create an interface and inject a failure before WHO_AM_I is read.
+    // try_new() reads WHO_AM_I as its very first I2C operation, so this
+    // failure must cause driver creation to fail.
+    let interface = MockInterface::new();
     interface.fail_next_read();
 
-    // Create new driver (this triggers init internally)
-    // The failure should occur during WHO_AM_I read or other init operations
-    let (mut driver, _interface) = crate::common::test_utils::create_mock_driver();
-
-    // This should still succeed because create_mock_driver() handles init
-    // but the injected failure will have been consumed
-    assert!(driver.read_accel().is_ok() || driver.read_accel().is_err());
+    let result = Icm20948Driver::try_new(interface);
+    assert!(
+        result.is_err(),
+        "Driver creation must fail when the WHO_AM_I read fails"
+    );
 }
 
 #[test]
@@ -277,21 +279,17 @@ fn test_error_clears_operations_log() {
     // Initialize driver
     driver.init(&mut test_utils::MockDelay).unwrap();
 
-    // Clear operations log
+    // Clear operations log, then inject a read failure.
     interface.clear_operations();
-
-    // Inject failure
     interface.fail_next_read();
     let _result = driver.read_accel();
 
-    // Even with error, operation should be logged
+    // The mock checks fail_next_read *before* appending to the operations log,
+    // so a failed read contributes zero entries. The log must still be empty.
     let ops = interface.operations();
-
-    // We should see some operations even if they failed
-    // (The mock records operations before checking failure flags)
     assert!(
-        !ops.is_empty() || ops.is_empty(),
-        "Operations should be tracked"
+        ops.is_empty(),
+        "A failed read must not be logged: mock returns before the logging path"
     );
 }
 
@@ -303,23 +301,18 @@ fn test_partial_calibration_failure() {
     let config = default_accel_config();
     driver.configure_accelerometer(config).unwrap();
 
-    // Set up sequence that will partially succeed
     interface.set_accel_sequence(vec![[100, 200, 16584]; 100]);
 
-    // Inject failure after some samples
-    // Note: This might succeed or fail depending on when the failure is injected
+    // fail_next_read fires on the very next I2C read, which will be the first
+    // accel sample read inside calibrate_accelerometer. The error must propagate
+    // out of the calibration routine.
     interface.fail_next_read();
 
     let result = driver.calibrate_accelerometer(50);
-
-    // Result depends on implementation - document the behavior
-    if result.is_err() {
-        // Expected: failure during calibration is propagated
-        assert!(true, "Calibration correctly propagated error");
-    } else {
-        // If it succeeds, the failure was consumed before calibration started
-        assert!(true, "Error was consumed before calibration");
-    }
+    assert!(
+        result.is_err(),
+        "Calibration must fail when the first sample read fails"
+    );
 }
 
 #[test]
@@ -330,18 +323,16 @@ fn test_gyro_calibration_with_error() {
     let config = default_gyro_config();
     driver.configure_gyroscope(config).unwrap();
 
-    // Set up sequence
     interface.set_gyro_sequence(vec![[50, -30, 20]; 100]);
 
-    // Inject failure
+    // fail_next_read fires on the very next I2C read, which will be the first
+    // gyro sample read inside calibrate_gyroscope. The error must propagate out.
     interface.fail_next_read();
 
     let result = driver.calibrate_gyroscope(50);
-
-    // Should fail during calibration reads
     assert!(
-        result.is_err() || result.is_ok(),
-        "Calibration behavior with error is documented"
+        result.is_err(),
+        "Calibration must fail when the first sample read fails"
     );
 }
 

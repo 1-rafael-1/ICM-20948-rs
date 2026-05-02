@@ -1451,10 +1451,28 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_rate_divider_invalid() {
+    fn test_with_sample_rate_clamping() {
+        // 0 is clamped to 1 Hz (minimum)
         let config = DmpConfig::new().with_sample_rate(0);
-        let divider = config.sample_rate_divider();
-        assert_eq!(divider, 0);
+        assert_eq!(config.sample_rate, 1);
+        // divider = (225 / 1) - 1 = 224
+        assert_eq!(config.sample_rate_divider(), 224);
+        // calibration params also consistently use the 56 Hz bucket
+        assert_eq!(
+            DmpSampleRate::from_hz(config.sample_rate),
+            DmpSampleRate::Hz56
+        );
+
+        // >225 is clamped to 225 Hz (maximum)
+        let config = DmpConfig::new().with_sample_rate(300);
+        assert_eq!(config.sample_rate, 225);
+        // divider = (225 / 225) - 1 = 0
+        assert_eq!(config.sample_rate_divider(), 0);
+        // calibration params match divider: Hz225
+        assert_eq!(
+            DmpSampleRate::from_hz(config.sample_rate),
+            DmpSampleRate::Hz225
+        );
     }
 
     #[test]
