@@ -31,10 +31,9 @@
 //! driver.dmp_init()?;
 //!
 //! // Configure which DMP features to enable
-//! let config = DmpConfig::default()
-//!     .with_quaternion_9axis(true)
-//!     .with_calibrated_gyro(true)
-//!     .with_sample_rate(100); // 100 Hz
+//! let config = DmpConfig::nine_axis()
+//!     .with_calibrated_gyro()
+//!     .with_sample_rate(100);
 //!
 //! driver.dmp_configure(&config)?;
 //!
@@ -80,23 +79,38 @@ pub use firmware::{
 pub use loader::{DMP_LOAD_DELAY_US, DmpInitializer, FirmwareLoader};
 pub use parser::DmpParser;
 
+/// The quaternion fusion algorithm the DMP should run.
+///
+/// These are mutually exclusive: the DMP can only run one fusion algorithm at a time.
+/// The choice is made by calling the corresponding named constructor on [`DmpConfig`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DmpFusionMode {
+    /// No quaternion fusion output. Use this when you only need raw or calibrated sensor data.
+    #[default]
+    None,
+    /// 6-axis fusion (accelerometer + gyroscope). Also known as Game Rotation Vector.
+    SixAxis,
+    /// 9-axis fusion (accelerometer + gyroscope + magnetometer).
+    /// Requires magnetometer initialisation via `dmp_init_magnetometer()` before calling
+    /// `dmp_configure()`.
+    NineAxis,
+    /// Geomagnetic rotation vector (9-axis with heading accuracy estimate).
+    /// Requires magnetometer initialisation via `dmp_init_magnetometer()` before calling
+    /// `dmp_configure()`.
+    GeomagRotationVector,
+    /// Pedometer-fused 6-axis quaternion (`PQuat6`).
+    PedometerSixAxis,
+}
+
 /// DMP configuration options
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[allow(clippy::struct_excessive_bools)]
 #[must_use]
 pub struct DmpConfig {
-    /// Enable 6-axis quaternion (accel + gyro)
-    pub quaternion_6axis: bool,
-
-    /// Enable 6-axis Pedometer quaternion (accel + gyro)
-    pub quaternion_p6axis: bool,
-
-    /// Enable 9-axis quaternion (accel + gyro + mag)
-    pub quaternion_9axis: bool,
-
-    /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
-    pub geomag_rotation_vector: bool,
+    /// Which quaternion fusion algorithm the DMP should run.
+    pub fusion_mode: DmpFusionMode,
 
     /// Enable host-calibrated accelerometer output
     pub host_calibrated_accel: bool,
@@ -140,36 +154,16 @@ pub struct DmpConfig {
 
 impl Default for DmpConfig {
     fn default() -> Self {
-        Self {
-            quaternion_6axis: false,
-            quaternion_p6axis: false,
-            quaternion_9axis: true, // Most common use case
-            geomag_rotation_vector: false,
-            host_calibrated_accel: false,
-            calibrated_gyro: false,
-            calibrated_mag: false,
-            raw_accel: false,
-            raw_gyro: false,
-            raw_mag: false,
-            step_detector: false,
-            step_counter: false,
-            // significant_motion: false,
-            // tilt_detector: false,
-            // pickup_detector: false,
-            // activity_classification: false,
-            sample_rate: 100, // 100 Hz is a good default
-        }
+        // 9-axis quaternion at 100 Hz is the most common use case
+        Self::nine_axis()
     }
 }
 
 impl DmpConfig {
-    /// Create a new DMP configuration with all features disabled
+    /// Create a `DmpConfig` with no fusion and all outputs disabled.
     pub const fn new() -> Self {
         Self {
-            quaternion_6axis: false,
-            quaternion_p6axis: false,
-            quaternion_9axis: false,
-            geomag_rotation_vector: false,
+            fusion_mode: DmpFusionMode::None,
             host_calibrated_accel: false,
             calibrated_gyro: false,
             calibrated_mag: false,
@@ -178,111 +172,101 @@ impl DmpConfig {
             raw_mag: false,
             step_detector: false,
             step_counter: false,
-            // significant_motion: false,
-            // tilt_detector: false,
-            // pickup_detector: false,
-            // activity_classification: false,
             sample_rate: 100,
         }
     }
 
-    /// Enable 6-axis quaternion output (accel + gyro)
-    pub const fn with_quaternion_6axis(mut self, enable: bool) -> Self {
-        self.quaternion_6axis = enable;
+    /// Start with 9-axis quaternion fusion (accelerometer + gyroscope + magnetometer).
+    ///
+    /// Requires magnetometer initialisation via `dmp_init_magnetometer()` before calling
+    /// `dmp_configure()`.
+    pub const fn nine_axis() -> Self {
+        Self {
+            fusion_mode: DmpFusionMode::NineAxis,
+            ..Self::new()
+        }
+    }
+
+    /// Start with 6-axis quaternion fusion (accelerometer + gyroscope).
+    ///
+    /// Also known as Game Rotation Vector. No magnetometer required.
+    pub const fn six_axis() -> Self {
+        Self {
+            fusion_mode: DmpFusionMode::SixAxis,
+            ..Self::new()
+        }
+    }
+
+    /// Start with geomagnetic rotation vector fusion (9-axis with heading accuracy).
+    ///
+    /// Requires magnetometer initialisation via `dmp_init_magnetometer()` before calling
+    /// `dmp_configure()`.
+    pub const fn geomag() -> Self {
+        Self {
+            fusion_mode: DmpFusionMode::GeomagRotationVector,
+            ..Self::new()
+        }
+    }
+
+    /// Start with pedometer-fused 6-axis quaternion (`PQuat6`).
+    pub const fn pedometer_six_axis() -> Self {
+        Self {
+            fusion_mode: DmpFusionMode::PedometerSixAxis,
+            ..Self::new()
+        }
+    }
+
+    /// Enable host-calibrated accelerometer output.
+    pub const fn with_host_calibrated_accel(mut self) -> Self {
+        self.host_calibrated_accel = true;
         self
     }
 
-    /// Enable 6-axis Pedometer quaternion (accel + gyro)
-    pub const fn with_quaternion_p6axis(mut self, enable: bool) -> Self {
-        self.quaternion_p6axis = enable;
+    /// Enable calibrated gyroscope output.
+    pub const fn with_calibrated_gyro(mut self) -> Self {
+        self.calibrated_gyro = true;
         self
     }
 
-    /// Enable 9-axis quaternion output (accel + gyro + mag)
-    pub const fn with_quaternion_9axis(mut self, enable: bool) -> Self {
-        self.quaternion_9axis = enable;
+    /// Enable calibrated magnetometer output.
+    pub const fn with_calibrated_mag(mut self) -> Self {
+        self.calibrated_mag = true;
         self
     }
 
-    /// Enable geomagnetic rotation vector (9-axis with heading accuracy)
-    pub const fn with_geomag_rotation_vector(mut self, enable: bool) -> Self {
-        self.geomag_rotation_vector = enable;
+    /// Enable raw accelerometer output from DMP.
+    pub const fn with_raw_accel(mut self) -> Self {
+        self.raw_accel = true;
         self
     }
 
-    /// Enable calibrated gyroscope output
-    pub const fn with_calibrated_gyro(mut self, enable: bool) -> Self {
-        self.calibrated_gyro = enable;
+    /// Enable raw gyroscope output from DMP.
+    pub const fn with_raw_gyro(mut self) -> Self {
+        self.raw_gyro = true;
         self
     }
 
-    /// Enable host-calibrated accelerometer output
-    pub const fn with_host_calibrated_accel(mut self, enable: bool) -> Self {
-        self.host_calibrated_accel = enable;
+    /// Enable raw magnetometer output from DMP.
+    pub const fn with_raw_mag(mut self) -> Self {
+        self.raw_mag = true;
         self
     }
 
-    /// Enable calibrated magnetometer output
-    pub const fn with_calibrated_mag(mut self, enable: bool) -> Self {
-        self.calibrated_mag = enable;
+    /// Enable pedometer step detector.
+    pub const fn with_step_detector(mut self) -> Self {
+        self.step_detector = true;
         self
     }
 
-    /// Enable raw accelerometer output from DMP
-    pub const fn with_raw_accel(mut self, enable: bool) -> Self {
-        self.raw_accel = enable;
+    /// Enable pedometer step counter.
+    pub const fn with_step_counter(mut self) -> Self {
+        self.step_counter = true;
         self
     }
 
-    /// Enable raw gyroscope output from DMP
-    pub const fn with_raw_gyro(mut self, enable: bool) -> Self {
-        self.raw_gyro = enable;
-        self
-    }
-
-    /// Enable raw magnetometer output from DMP
-    pub const fn with_raw_mag(mut self, enable: bool) -> Self {
-        self.raw_mag = enable;
-        self
-    }
-
-    /// Enable pedometer step detector
-    pub const fn with_step_detector(mut self, enable: bool) -> Self {
-        self.step_detector = enable;
-        self
-    }
-
-    /// Enable pedometer step counter
-    pub const fn with_step_counter(mut self, enable: bool) -> Self {
-        self.step_counter = enable;
-        self
-    }
-
-    // /// Enable significant motion detection (not implemented yet)
-    // pub const fn with_significant_motion(mut self, enable: bool) -> Self {
-    //     self.significant_motion = enable;
-    //     self
-    // }
-
-    // /// Enable tilt detector (not implemented yet)
-    // pub const fn with_tilt_detector(mut self, enable: bool) -> Self {
-    //     self.tilt_detector = enable;
-    //     self
-    // }
-
-    // /// Enable pickup/flip detector (not implemented yet)
-    // pub const fn with_pickup_detector(mut self, enable: bool) -> Self {
-    //     self.pickup_detector = enable;
-    //     self
-    // }
-
-    // /// Enable activity classification (not implemented yet)
-    // pub const fn with_activity_classification(mut self, enable: bool) -> Self {
-    //     self.activity_classification = enable;
-    //     self
-    // }
-
-    /// Set DMP sample rate in Hz
+    /// Set the DMP output sample rate in Hz.
+    ///
+    /// Valid range is 1–225 Hz. Values outside this range are clamped to the maximum.
     pub const fn with_sample_rate(mut self, rate: u16) -> Self {
         self.sample_rate = rate;
         self
@@ -448,23 +432,21 @@ mod tests {
     #[test]
     fn test_dmp_config_default() {
         let config = DmpConfig::default();
-        assert!(config.quaternion_9axis); // Should be enabled by default
+        assert_eq!(config.fusion_mode, DmpFusionMode::NineAxis);
         assert_eq!(config.sample_rate, 100);
     }
 
     #[test]
     fn test_dmp_config_builder() {
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_host_calibrated_accel(true)
-            .with_calibrated_gyro(true)
+        let config = DmpConfig::six_axis()
+            .with_host_calibrated_accel()
+            .with_calibrated_gyro()
             .with_sample_rate(200);
 
-        assert!(config.quaternion_6axis);
+        assert_eq!(config.fusion_mode, DmpFusionMode::SixAxis);
         assert!(config.host_calibrated_accel);
         assert!(config.calibrated_gyro);
         assert_eq!(config.sample_rate, 200);
-        assert!(!config.quaternion_9axis); // Should not be enabled
     }
 
     #[test]

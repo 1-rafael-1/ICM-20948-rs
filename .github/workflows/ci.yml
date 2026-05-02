@@ -60,6 +60,9 @@ jobs:
           - "async"
           - "defmt"
           - "async,defmt"
+          - "dmp"
+          - "dmp,async"
+          - "dmp,async,defmt"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -107,6 +110,9 @@ jobs:
 
       - name: Run library unit tests
         run: cargo test --lib
+
+      - name: Run library unit tests (DMP feature)
+        run: cargo test --lib --features dmp
 
       - name: Run driver tests (blocking API)
         run: cargo test --test driver_tests --features std
@@ -163,6 +169,8 @@ jobs:
           - example: wake_on_motion_async
           - example: hardware_interrupt_async
           - example: dmp_integration_async
+            features: dmp
+          - example: dmp_integration_6axis_async
             features: dmp
     steps:
       - name: Checkout code

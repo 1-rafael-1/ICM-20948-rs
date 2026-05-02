@@ -26,7 +26,7 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Instant, Timer};
-use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
+use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
 use panic_probe as _;
 
 /// Firmware image type for bootloader
@@ -91,10 +91,9 @@ async fn main(_spawner: Spawner) {
 
     let dmp_sample_rate_hz: u16 = 225;
 
-    let dmp_config = DmpConfig::new()
-        .with_quaternion_9axis(true)
-        .with_host_calibrated_accel(true)
-        .with_raw_accel(true)
+    let dmp_config = DmpConfig::nine_axis()
+        .with_host_calibrated_accel()
+        .with_raw_accel()
         .with_sample_rate(dmp_sample_rate_hz);
 
     imu.dmp_configure(&dmp_config).await.unwrap();

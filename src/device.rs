@@ -1147,8 +1147,7 @@ where
     /// delay.delay_ms(2);
     ///
     /// // Configure for 9-axis quaternion at 100Hz
-    /// let config = DmpConfig::default()
-    ///     .with_quaternion_9axis(true)
+    /// let config = DmpConfig::nine_axis()
     ///     .with_sample_rate(100);
     /// driver.dmp_configure(&config)?;
     ///
@@ -1157,6 +1156,7 @@ where
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dmp_configure(&mut self, config: &crate::dmp::DmpConfig) -> Result<(), Error<I::Error>> {
+        use crate::dmp::DmpFusionMode;
         use crate::dmp::config::ConfigSequence;
 
         #[cfg(feature = "dmp")]
@@ -1164,9 +1164,10 @@ where
             return Err(Error::DmpFirmwareNotLoaded);
         }
 
-        if (config.quaternion_9axis
-            || config.geomag_rotation_vector
-            || config.raw_mag
+        if (matches!(
+            config.fusion_mode,
+            DmpFusionMode::NineAxis | DmpFusionMode::GeomagRotationVector
+        ) || config.raw_mag
             || config.calibrated_mag)
             && !self.mag_initialized
         {
@@ -4131,7 +4132,7 @@ where
     /// driver.dmp_init_magnetometer(&mut delay)?;
     ///
     /// // Configure and enable DMP
-    /// let config = DmpConfig::default().with_quaternion_9axis(true);
+    /// let config = DmpConfig::nine_axis();
     /// driver.dmp_configure(&config)?;
     /// driver.dmp_enable(true)?;
     /// ```
@@ -6249,8 +6250,7 @@ where
     /// driver.dmp_init(&mut delay).await?;
     ///
     /// // Configure for 9-axis quaternion at 100Hz
-    /// let config = DmpConfig::default()
-    ///     .with_quaternion_9axis(true)
+    /// let config = DmpConfig::nine_axis()
     ///     .with_sample_rate(100);
     /// driver.dmp_configure(&config).await?;
     ///
@@ -6263,6 +6263,7 @@ where
         &mut self,
         config: &crate::dmp::DmpConfig,
     ) -> Result<(), Error<I::Error>> {
+        use crate::dmp::DmpFusionMode;
         use crate::dmp::config::ConfigSequence;
 
         #[cfg(feature = "dmp")]
@@ -6270,9 +6271,10 @@ where
             return Err(Error::DmpFirmwareNotLoaded);
         }
 
-        if (config.quaternion_9axis
-            || config.geomag_rotation_vector
-            || config.raw_mag
+        if (matches!(
+            config.fusion_mode,
+            DmpFusionMode::NineAxis | DmpFusionMode::GeomagRotationVector
+        ) || config.raw_mag
             || config.calibrated_mag)
             && !self.mag_initialized
         {
@@ -7440,7 +7442,7 @@ where
     /// driver.dmp_init_magnetometer(&mut delay).await?;
     ///
     /// // Configure and enable DMP
-    /// let config = DmpConfig::default().with_quaternion_9axis(true);
+    /// let config = DmpConfig::nine_axis();
     /// driver.dmp_configure(&config).await?;
     /// driver.dmp_enable(true).await?;
     /// ```

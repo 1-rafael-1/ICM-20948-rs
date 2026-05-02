@@ -36,9 +36,7 @@ fn test_dmp_read_fifo_overflow_returns_error() {
 fn test_dmp_configure_requires_firmware() {
     let (mut driver, _interface) = create_mock_driver();
 
-    let config = DmpConfig::new()
-        .with_quaternion_6axis(true)
-        .with_sample_rate(100);
+    let config = DmpConfig::six_axis().with_sample_rate(100);
 
     let result = driver.dmp_configure(&config);
     assert!(matches!(result, Err(Error::DmpFirmwareNotLoaded)));
@@ -53,9 +51,7 @@ fn test_dmp_configure_requires_mag_init_for_mag_outputs() {
     driver.dmp_load_firmware().expect("Firmware load failed");
 
     // 9-axis requires magnetometer init
-    let config = DmpConfig::new()
-        .with_quaternion_9axis(true)
-        .with_sample_rate(100);
+    let config = DmpConfig::nine_axis().with_sample_rate(100);
 
     let result = driver.dmp_configure(&config);
     assert!(matches!(result, Err(Error::MagnetometerNotInitialized)));
@@ -78,9 +74,7 @@ fn test_dmp_enable_requires_firmware_and_config() {
     assert!(matches!(result, Err(Error::DmpNotConfigured)));
 
     // Configure (6-axis, no magnetometer needed)
-    let config = DmpConfig::new()
-        .with_quaternion_6axis(true)
-        .with_sample_rate(100);
+    let config = DmpConfig::six_axis().with_sample_rate(100);
 
     driver.dmp_configure(&config).expect("DMP configure failed");
 
