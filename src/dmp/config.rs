@@ -30,7 +30,7 @@
 //! The DMP uses a 16-bit feature mask to control which outputs are enabled.
 //! These are written to specific DMP memory addresses after firmware loading.
 
-use crate::dmp::DmpConfig;
+use crate::dmp::{DmpConfig, DmpFusionMode};
 
 /// Calculate `GYRO_SF` (Gyro Scaling Factor) for DMP
 ///
@@ -949,36 +949,27 @@ impl DmpConfig {
     pub fn get_active_features(&self) -> DmpFeatures {
         let mut f = DmpFeatures::empty();
 
-        let quat9_enabled = self.quaternion_9axis;
-        let mut geomag_enabled = self.geomag_rotation_vector;
-        if quat9_enabled && geomag_enabled {
-            #[cfg(feature = "defmt")]
-            defmt::warn!(
-                "DmpConfig Conflict: Both QUATERNION_9AXIS and GEOMAG_ROTATION_VECTOR enabled. They are mutually exclusive. GEOMAG will be ignored."
-            );
-            geomag_enabled = false;
+        match self.fusion_mode {
+            DmpFusionMode::None => {}
+            DmpFusionMode::SixAxis => {
+                f.insert(DmpFeatures::QUATERNION_6AXIS);
+            }
+            DmpFusionMode::NineAxis => {
+                f.insert(DmpFeatures::QUATERNION_9AXIS);
+            }
+            DmpFusionMode::GeomagRotationVector => {
+                f.insert(DmpFeatures::GEOMAG_ROTATION_VECTOR);
+            }
+            DmpFusionMode::PedometerSixAxis => {
+                f.insert(DmpFeatures::QUATERNION_P6AXIS);
+            }
         }
 
         if self.host_calibrated_accel {
             #[cfg(feature = "defmt")]
             defmt::info!(
-                "DmpConfig Conflict: DMP only outputs Raw Accel + Accuracy. Host handles calibration."
+                "DMP: host_calibrated_accel enabled — DMP outputs Raw Accel + Accuracy; calibration is applied on the host."
             );
-        }
-
-        if quat9_enabled {
-            f.insert(DmpFeatures::QUATERNION_9AXIS);
-        } else if geomag_enabled {
-            f.insert(DmpFeatures::GEOMAG_ROTATION_VECTOR);
-        }
-
-        if self.quaternion_6axis {
-            f.insert(DmpFeatures::QUATERNION_6AXIS);
-        }
-        if self.quaternion_p6axis {
-            f.insert(DmpFeatures::QUATERNION_P6AXIS);
-        }
-        if self.host_calibrated_accel {
             f.insert(DmpFeatures::HOST_CALIBRATED_ACCEL);
         }
         if self.calibrated_gyro {
@@ -1002,19 +993,6 @@ impl DmpConfig {
         if self.step_counter {
             f.insert(DmpFeatures::STEP_COUNTER);
         }
-
-        // if self.significant_motion {
-        //     f.insert(DmpFeatures::SIGNIFICANT_MOTION);
-        // }
-        // if self.tilt_detector {
-        //     f.insert(DmpFeatures::TILT_DETECTOR);
-        // }
-        // if self.pickup_detector {
-        //     f.insert(DmpFeatures::PICKUP_DETECTOR);
-        // }
-        // if self.activity_classification {
-        //     f.insert(DmpFeatures::ACTIVITY_CLASSIFICATION);
-        // }
 
         f
     }
@@ -1393,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_feature_mask_6axis() {
-        let config = DmpConfig::new().with_quaternion_6axis(true);
+        let config = DmpConfig::six_axis();
         let features = config.get_active_features();
         // HEADER2 bit is not part of DmpFeatures; it is added later in as_control1()
         assert!(features.contains(DmpFeatures::QUATERNION_6AXIS));
@@ -1401,16 +1379,14 @@ mod tests {
 
     #[test]
     fn test_feature_mask_9axis() {
-        let config = DmpConfig::new().with_quaternion_9axis(true);
+        let config = DmpConfig::nine_axis();
         let features = config.get_active_features();
         assert!(features.contains(DmpFeatures::QUATERNION_9AXIS));
     }
 
     #[test]
     fn test_feature_mask_multiple() {
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_calibrated_gyro(true);
+        let config = DmpConfig::six_axis().with_calibrated_gyro();
         let features = config.get_active_features();
         assert!(features.contains(DmpFeatures::QUATERNION_6AXIS));
         assert!(features.contains(DmpFeatures::CALIBRATED_GYRO));
@@ -1419,23 +1395,41 @@ mod tests {
 
     #[test]
     fn test_packet_size_quat_only() {
-        let config = DmpConfig::new().with_quaternion_6axis(true);
+        let config = DmpConfig::six_axis();
         let size = config.packet_size();
-        // Header (2) + QUAT6 (12) + Footer (2) = 16
-        let expected = DmpPacketSize::HEADER + DmpPacketSize::QUAT6 + DmpPacketSize::FOOTER;
+        // Header (2) + Header2 (2) + QUAT6 (12) + Footer (2) = 18
+        // HEADER2 is always present when any fusion output is active
+        let expected = DmpPacketSize::HEADER
+            + DmpPacketSize::HEADER2
+            + DmpPacketSize::QUAT6
+            + DmpPacketSize::FOOTER;
         assert_eq!(size, expected);
     }
 
     #[test]
     fn test_packet_size_with_sensors() {
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_host_calibrated_accel(true)
-            .with_calibrated_gyro(true);
+        let config = DmpConfig::six_axis()
+            .with_host_calibrated_accel()
+            .with_calibrated_gyro();
         let size = config.packet_size();
+        // With host_calibrated_accel + calibrated_gyro + six_axis fusion:
+        //   Header          (2)
+        //   Header2         (2)  — present because fusion/sensor outputs are active
+        //   ACCEL_ACCURACY  (2)  — in Header2 payload, from host_calibrated_accel
+        //   GYRO_ACCURACY   (2)  — in Header2 payload, from calibrated_gyro
+        //   ACCEL_COMPASS   (6)  — raw accel enabled implicitly by host_calibrated_accel
+        //   RAW_GYRO       (12)  — raw gyro + bias, enabled implicitly by calibrated_gyro
+        //   QUAT6          (12)  — six_axis fusion output
+        //   CAL_GYRO       (12)  — DMP-calibrated gyro output
+        //   Footer          (2)
+        //   Total = 52
         let expected = DmpPacketSize::HEADER
+            + DmpPacketSize::HEADER2
+            + DmpPacketSize::ACCEL_ACCURACY
+            + DmpPacketSize::GYRO_ACCURACY
+            + DmpPacketSize::ACCEL_COMPASS
+            + DmpPacketSize::RAW_GYRO
             + DmpPacketSize::QUAT6
-            + DmpPacketSize::ACCEL_COMPASS  // raw accel (6 bytes) for host_calibrated_accel
             + DmpPacketSize::CAL_GYRO
             + DmpPacketSize::FOOTER;
         assert_eq!(size, expected);
@@ -1457,17 +1451,33 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_rate_divider_invalid() {
+    fn test_with_sample_rate_clamping() {
+        // 0 is clamped to 1 Hz (minimum)
         let config = DmpConfig::new().with_sample_rate(0);
-        let divider = config.sample_rate_divider();
-        assert_eq!(divider, 0);
+        assert_eq!(config.sample_rate, 1);
+        // divider = (225 / 1) - 1 = 224
+        assert_eq!(config.sample_rate_divider(), 224);
+        // calibration params also consistently use the 56 Hz bucket
+        assert_eq!(
+            DmpSampleRate::from_hz(config.sample_rate),
+            DmpSampleRate::Hz56
+        );
+
+        // >225 is clamped to 225 Hz (maximum)
+        let config = DmpConfig::new().with_sample_rate(300);
+        assert_eq!(config.sample_rate, 225);
+        // divider = (225 / 225) - 1 = 0
+        assert_eq!(config.sample_rate_divider(), 0);
+        // calibration params match divider: Hz225
+        assert_eq!(
+            DmpSampleRate::from_hz(config.sample_rate),
+            DmpSampleRate::Hz225
+        );
     }
 
     #[test]
     fn test_config_sequence() {
-        let config = DmpConfig::new()
-            .with_quaternion_6axis(true)
-            .with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(100);
         let seq = ConfigSequence::from_config(&config);
 
         assert!(seq.features.contains(DmpFeatures::QUATERNION_6AXIS));
@@ -1503,10 +1513,15 @@ mod tests {
 
     #[test]
     fn test_arbitrary_sample_rate_exact_match_returns_none() {
-        // Exact matches should return None (use DmpSampleRate enum instead)
-        assert!(ArbitrarySampleRate::interpolate(56).is_none());
-        assert!(ArbitrarySampleRate::interpolate(112).is_none());
-        assert!(ArbitrarySampleRate::interpolate(225).is_none());
+        // The three validated gyro dividers are 19, 9, and 4.
+        // ODR = 1100 / (1 + div), so the exact Hz values that produce those dividers are:
+        //   div=19 → 1100/20 = 55 Hz
+        //   div=9  → 1100/10 = 110 Hz
+        //   div=4  → 1100/5  = 220 Hz
+        // The enum names Hz56/Hz112/Hz225 are nominal; the formula determines the real match.
+        assert!(ArbitrarySampleRate::interpolate(55).is_none());
+        assert!(ArbitrarySampleRate::interpolate(110).is_none());
+        assert!(ArbitrarySampleRate::interpolate(220).is_none());
     }
 
     #[test]

@@ -641,31 +641,34 @@ mod tests {
             DmpPacketHeader::QUAT6_BIT | DmpPacketHeader::ACCEL_BIT | DmpPacketHeader::GYRO_BIT;
         let header_bytes = header.to_be_bytes();
 
-        // Quaternion (X,Y,Z all zero)
-        let quat_data = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ];
-        // Accel: (100, 200, 300)
+        // Hardware packet order: ACCEL, GYRO (raw + bias), QUAT6, Footer
+        // Accel: (100, 200, 300) — 6 bytes
         let accel_data = [
             0x00, 0x64, // x = 100
             0x00, 0xC8, // y = 200
             0x01, 0x2C, // z = 300
         ];
-        // Gyro: (10, 20, 30)
-        let gyro_data = [
+        // Gyro raw: (10, 20, 30) — 6 bytes; bias: (0, 0, 0) — 6 bytes
+        // GYRO_BIT = RAW_GYRO = 12 bytes total (raw data + bias)
+        let gyro_raw = [
             0x00, 0x0A, // x = 10
             0x00, 0x14, // y = 20
             0x00, 0x1E, // z = 30
         ];
-        // Footer (2 bytes)
-        let footer = [0x00, 0x00];
+        let gyro_bias = [0x00u8; 6]; // bias = (0, 0, 0)
+        // Quaternion (X,Y,Z all zero) — 12 bytes
+        let quat_data = [0x00u8; 12];
+        // Footer — 2 bytes
+        let footer = [0x00u8; 2];
 
-        let mut data = Vec::new();
-        data.extend_from_slice(&header_bytes);
-        data.extend_from_slice(&quat_data);
-        data.extend_from_slice(&accel_data);
-        data.extend_from_slice(&gyro_data);
-        data.extend_from_slice(&footer);
+        // header(2) + accel(6) + gyro_raw(6) + gyro_bias(6) + quat6(12) + footer(2) = 34 bytes
+        let mut data = [0u8; 34];
+        data[0..2].copy_from_slice(&header_bytes);
+        data[2..8].copy_from_slice(&accel_data);
+        data[8..14].copy_from_slice(&gyro_raw);
+        data[14..20].copy_from_slice(&gyro_bias);
+        data[20..32].copy_from_slice(&quat_data);
+        data[32..34].copy_from_slice(&footer);
 
         let (dmp_data, consumed) = parser.parse_packet(&data).unwrap();
         assert_eq!(consumed, data.len());
@@ -697,10 +700,13 @@ mod tests {
     fn test_validate_header() {
         let parser = DmpParser::new();
 
-        assert!(parser.validate_header(0x0800)); // QUAT6_BIT
-        assert!(parser.validate_header(0x8000)); // ACCEL_BIT
-        assert!(!parser.validate_header(0x0000));
-        assert!(parser.validate_header(0x7FFF));
+        assert!(parser.validate_header(0x0800)); // QUAT6_BIT alone
+        assert!(parser.validate_header(0x8000)); // ACCEL_BIT alone
+        assert!(!parser.validate_header(0x0000)); // empty — no data bits
+        // 0xFFF8 = all 13 known bits set; bits 0-2 are not defined and must be 0
+        assert!(parser.validate_header(0xFFF8));
+        // 0x7FFF sets bits 0-2 (unknown) so must be rejected
+        assert!(!parser.validate_header(0x7FFF));
     }
 
     #[test]
