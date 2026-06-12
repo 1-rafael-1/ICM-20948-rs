@@ -281,13 +281,13 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        // Always write REG_BANK_SEL — generated register accessors
-        // (e.g., bank_N_*) write it directly without updating current_bank,
-        // so the cache can be stale even when it appears to match.
-        self.device.reg_bank_sel().write(|w| {
-            w.set_user_bank(bank as u8);
-        })?;
-        self.current_bank = Some(bank);
+        if self.current_bank != Some(bank) {
+            self.device.reg_bank_sel().write(|w| {
+                w.set_user_bank(bank as u8);
+            })?;
+
+            self.current_bank = Some(bank);
+        }
         Ok(())
     }
 
@@ -3571,67 +3571,9 @@ where
         // AK09916 sensitivity: 0.15 µT/LSB
         const SENSITIVITY: f32 = 0.15;
 
-        if !self.mag_initialized {
-            return Err(Error::Magnetometer);
-        }
-
-        self.select_bank(Bank::Bank0)?;
-
-        // Read 9 bytes from EXT_SLV_SENS_DATA
-        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
-        let data = [
-            self.device
-                .ext_slv_sens_data_00()
-                .read()?
-                .ext_slv_sens_data_00(),
-            self.device
-                .ext_slv_sens_data_01()
-                .read()?
-                .ext_slv_sens_data_01(),
-            self.device
-                .ext_slv_sens_data_02()
-                .read()?
-                .ext_slv_sens_data_02(),
-            self.device
-                .ext_slv_sens_data_03()
-                .read()?
-                .ext_slv_sens_data_03(),
-            self.device
-                .ext_slv_sens_data_04()
-                .read()?
-                .ext_slv_sens_data_04(),
-            self.device
-                .ext_slv_sens_data_05()
-                .read()?
-                .ext_slv_sens_data_05(),
-            self.device
-                .ext_slv_sens_data_06()
-                .read()?
-                .ext_slv_sens_data_06(),
-            self.device
-                .ext_slv_sens_data_07()
-                .read()?
-                .ext_slv_sens_data_07(),
-            self.device
-                .ext_slv_sens_data_08()
-                .read()?
-                .ext_slv_sens_data_08(),
-        ];
-
-        // ST1 is first byte (data[0]) but we do NOT check it when reading via I2C master
-        // The I2C master polls automatically at a fixed rate, so received data is valid
-
-        // ST2 is at index 8
-        let st2 = data[8];
-        if (st2 & 0x08) != 0 {
-            return Err(Error::Magnetometer); // Magnetic overflow
-        }
-
-        // Parse little-endian 16-bit values
-        // Data starts at index 1: HXL, HXH, HYL, HYH, HZL, HZH
-        let x = i16::from_le_bytes([data[1], data[2]]);
-        let y = i16::from_le_bytes([data[3], data[4]]);
-        let z = i16::from_le_bytes([data[5], data[6]]);
+        // Delegate to read_magnetometer_raw which reads all 9 bytes
+        // in a single transaction — no torn reads.
+        let (x, y, z) = self.read_magnetometer_raw()?;
 
         let data = crate::sensors::MagDataUT {
             x: f32::from(x) * SENSITIVITY,
@@ -3656,51 +3598,9 @@ where
 
         self.select_bank(Bank::Bank0)?;
 
-        // Read 9 bytes from EXT_SLV_SENS_DATA
-        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
-        let data = [
-            self.device
-                .ext_slv_sens_data_00()
-                .read()?
-                .ext_slv_sens_data_00(),
-            self.device
-                .ext_slv_sens_data_01()
-                .read()?
-                .ext_slv_sens_data_01(),
-            self.device
-                .ext_slv_sens_data_02()
-                .read()?
-                .ext_slv_sens_data_02(),
-            self.device
-                .ext_slv_sens_data_03()
-                .read()?
-                .ext_slv_sens_data_03(),
-            self.device
-                .ext_slv_sens_data_04()
-                .read()?
-                .ext_slv_sens_data_04(),
-            self.device
-                .ext_slv_sens_data_05()
-                .read()?
-                .ext_slv_sens_data_05(),
-            self.device
-                .ext_slv_sens_data_06()
-                .read()?
-                .ext_slv_sens_data_06(),
-            self.device
-                .ext_slv_sens_data_07()
-                .read()?
-                .ext_slv_sens_data_07(),
-            self.device
-                .ext_slv_sens_data_08()
-                .read()?
-                .ext_slv_sens_data_08(),
-        ];
+        let data = self.read_mag_data_atomic()?;
 
-        // ST1 is first byte (data[0]) but we do NOT check it when reading via I2C master
-        // The I2C master polls automatically at a fixed rate, so received data is valid
-
-        // ST2 is at index 8
+        // ST2 is at index 8 (ST1-start layout: ST1, HXL..HZH, TMPS, ST2)
         let st2 = data[8];
         if (st2 & 0x08) != 0 {
             return Err(Error::Magnetometer); // Magnetic overflow
@@ -3713,6 +3613,17 @@ where
         let z = i16::from_le_bytes([data[5], data[6]]);
 
         Ok((x, y, z))
+    }
+
+    /// Read all 9 EXT_SLV_SENS_DATA bytes in a single bus transaction.
+    ///
+    /// Reads registers 0x3B–0x43 atomically (ST1-start layout for blocking path).
+    fn read_mag_data_atomic(&mut self) -> Result<[u8; 9], Error<I::Error>> {
+        let mut buf = [0u8; 9];
+        // EXT_SLV_SENS_DATA starts at 0x3B in Bank 0.
+        // Register address auto-increments for multi-byte reads.
+        self.device.interface.read_register(0x3B, 72, &mut buf)?;
+        Ok(buf)
     }
 
     /// Read magnetometer heading (yaw angle) in degrees
@@ -4475,16 +4386,16 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub async fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        // Always write REG_BANK_SEL — generated register accessors
-        // (e.g., bank_N_*) write it directly without updating current_bank,
-        // so the cache can be stale even when it appears to match.
-        self.device
-            .reg_bank_sel()
-            .write_async(|w| {
-                w.set_user_bank(bank as u8);
-            })
-            .await?;
-        self.current_bank = Some(bank);
+        if self.current_bank != Some(bank) {
+            self.device
+                .reg_bank_sel()
+                .write_async(|w| {
+                    w.set_user_bank(bank as u8);
+                })
+                .await?;
+
+            self.current_bank = Some(bank);
+        }
         Ok(())
     }
 
@@ -6789,8 +6700,7 @@ where
         self.device
             .interface
             .read_register(0x3B, 64, &mut buf)
-            .await
-            .map_err(Error::Bus)?;
+            .await?;
         Ok(buf)
     }
 

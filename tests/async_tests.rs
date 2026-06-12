@@ -164,7 +164,7 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                         self.pwr_mgmt_1 &= !0x80;
                     }
                 }
-                (3, 0x07) => {
+                (3, 0x15) => {
                     // BANK_3_I2C_SLV_4_CTRL - I2C Slave 4 control
                     // When enabled, simulate magnetometer WHO_AM_I read
                     if (value & 0x80) != 0 {
