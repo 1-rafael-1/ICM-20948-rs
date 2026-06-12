@@ -1,6 +1,7 @@
 //! Integration tests for basic workflow scenarios
 
 use crate::common::{create_mock_driver, default_accel_config, default_gyro_config, test_utils};
+use icm20948::{Error, sensors::MagConfig};
 
 #[test]
 fn test_complete_initialization_workflow() {
@@ -173,4 +174,114 @@ fn test_torn_read_protection() {
             "Address should be consecutive starting from ACCEL_XOUT_H (0x2D)"
         );
     }
+}
+
+// ==================== MAGNETOMETER TESTS ====================
+
+#[test]
+fn test_magnetometer_read_raw_correct_parsing() {
+    // Verify that blocking read_magnetometer_raw correctly parses the 9-byte
+    // ST1-layout: [ST1, HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2]
+    let (mut driver, interface) = create_mock_driver();
+
+    driver.init(&mut test_utils::MockDelay).unwrap();
+
+    let mag_config = MagConfig::default();
+    driver
+        .init_magnetometer(mag_config, &mut test_utils::MockDelay)
+        .unwrap();
+
+    interface.set_mag_data(0x1234, -0x567, 0x7A55);
+
+    let result = driver.read_magnetometer_raw().unwrap();
+    assert_eq!(
+        result,
+        (0x1234, -0x567, 0x7A55),
+        "Raw magnetometer values should match mock data"
+    );
+}
+
+#[test]
+fn test_magnetometer_read_correct_parsing() {
+    // Verify that blocking read_magnetometer correctly converts raw values to µT
+    const SENSITIVITY: f32 = 0.15;
+    let (mut driver, interface) = create_mock_driver();
+
+    driver.init(&mut test_utils::MockDelay).unwrap();
+
+    let mag_config = MagConfig::default();
+    driver
+        .init_magnetometer(mag_config, &mut test_utils::MockDelay)
+        .unwrap();
+
+    interface.set_mag_data(0x1234, -0x567, 0x7A55);
+
+    let data = driver.read_magnetometer().unwrap();
+    let expected_x = 0x1234i16 as f32 * SENSITIVITY;
+    let expected_y = -0x567i16 as f32 * SENSITIVITY;
+    let expected_z = 0x7A55i16 as f32 * SENSITIVITY;
+    assert!(
+        (data.x - expected_x).abs() < 0.01,
+        "X µT mismatch: {} vs {}",
+        data.x,
+        expected_x
+    );
+    assert!(
+        (data.y - expected_y).abs() < 0.01,
+        "Y µT mismatch: {} vs {}",
+        data.y,
+        expected_y
+    );
+    assert!(
+        (data.z - expected_z).abs() < 0.01,
+        "Z µT mismatch: {} vs {}",
+        data.z,
+        expected_z
+    );
+}
+
+#[test]
+fn test_magnetometer_read_raw_detects_overflow() {
+    // Verify that blocking read_magnetometer_raw returns Error::Magnetometer
+    // when ST2 (register 0x43, data[8]) has the overflow bit set.
+    let (mut driver, interface) = create_mock_driver();
+
+    driver.init(&mut test_utils::MockDelay).unwrap();
+
+    let mag_config = MagConfig::default();
+    driver
+        .init_magnetometer(mag_config, &mut test_utils::MockDelay)
+        .unwrap();
+
+    interface.set_mag_overflow();
+
+    let result = driver.read_magnetometer_raw();
+    assert!(
+        matches!(result, Err(Error::Magnetometer)),
+        "ST2 overflow should be rejected as Error::Magnetometer, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_magnetometer_read_detects_overflow() {
+    // Verify that blocking read_magnetometer returns Error::Magnetometer
+    // when ST2 (register 0x43, data[8]) has the overflow bit set.
+    let (mut driver, interface) = create_mock_driver();
+
+    driver.init(&mut test_utils::MockDelay).unwrap();
+
+    let mag_config = MagConfig::default();
+    driver
+        .init_magnetometer(mag_config, &mut test_utils::MockDelay)
+        .unwrap();
+
+    interface.set_mag_overflow();
+
+    let result = driver.read_magnetometer();
+    assert!(
+        matches!(result, Err(Error::Magnetometer)),
+        "ST2 overflow should be rejected as Error::Magnetometer, got {:?}",
+        result
+    );
 }

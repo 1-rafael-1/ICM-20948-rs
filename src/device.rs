@@ -3578,7 +3578,7 @@ where
         self.select_bank(Bank::Bank0)?;
 
         // Read 9 bytes from EXT_SLV_SENS_DATA
-        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, ST2, (dummy)
+        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
         let data = [
             self.device
                 .ext_slv_sens_data_00()
@@ -3621,8 +3621,8 @@ where
         // ST1 is first byte (data[0]) but we do NOT check it when reading via I2C master
         // The I2C master polls automatically at a fixed rate, so received data is valid
 
-        // ST2 is at index 7
-        let st2 = data[7];
+        // ST2 is at index 8
+        let st2 = data[8];
         if (st2 & 0x08) != 0 {
             return Err(Error::Magnetometer); // Magnetic overflow
         }
@@ -3656,8 +3656,8 @@ where
 
         self.select_bank(Bank::Bank0)?;
 
-        // Read 8 bytes from EXT_SLV_SENS_DATA
-        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, ST2 (AK09916 order)
+        // Read 9 bytes from EXT_SLV_SENS_DATA
+        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
         let data = [
             self.device
                 .ext_slv_sens_data_00()
@@ -3691,13 +3691,17 @@ where
                 .ext_slv_sens_data_07()
                 .read()?
                 .ext_slv_sens_data_07(),
+            self.device
+                .ext_slv_sens_data_08()
+                .read()?
+                .ext_slv_sens_data_08(),
         ];
 
         // ST1 is first byte (data[0]) but we do NOT check it when reading via I2C master
         // The I2C master polls automatically at a fixed rate, so received data is valid
 
-        // ST2 is at index 7
-        let st2 = data[7];
+        // ST2 is at index 8
+        let st2 = data[8];
         if (st2 & 0x08) != 0 {
             return Err(Error::Magnetometer); // Magnetic overflow
         }
@@ -6727,67 +6731,9 @@ where
             return Err(Error::Magnetometer);
         }
 
-        self.select_bank(Bank::Bank0).await?;
-
-        // Read 8 bytes from EXT_SLV_SENS_DATA
-        // Format: HXL, HXH, HYL, HYH, HZL, HZH, ST1, ST2
-        let data = [
-            self.device
-                .ext_slv_sens_data_00()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_00(),
-            self.device
-                .ext_slv_sens_data_01()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_01(),
-            self.device
-                .ext_slv_sens_data_02()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_02(),
-            self.device
-                .ext_slv_sens_data_03()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_03(),
-            self.device
-                .ext_slv_sens_data_04()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_04(),
-            self.device
-                .ext_slv_sens_data_05()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_05(),
-            self.device
-                .ext_slv_sens_data_06()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_06(),
-            self.device
-                .ext_slv_sens_data_07()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_07(),
-        ];
-
-        // ST1 is at index 6 but we do NOT check it when reading via I2C master
-        // The I2C master polls automatically at a fixed rate, so received data is valid
-
-        // Check ST2 for overflow (bit 3)
-        let st2 = data[7];
-        if (st2 & 0x08) != 0 {
-            return Err(Error::Magnetometer); // Magnetic overflow
-        }
-
-        // Parse little-endian 16-bit values
-        // AK09916 uses little-endian format (LSB first)
-        let x = i16::from_le_bytes([data[0], data[1]]);
-        let y = i16::from_le_bytes([data[2], data[3]]);
-        let z = i16::from_le_bytes([data[4], data[5]]);
+        // Delegate to read_magnetometer_raw which reads all bytes
+        // in a single transaction — no inter-read drift.
+        let (x, y, z) = self.read_magnetometer_raw().await?;
 
         let data = crate::sensors::MagDataUT {
             x: f32::from(x) * SENSITIVITY,
@@ -6799,6 +6745,9 @@ where
     }
 
     /// Read raw magnetometer data (16-bit signed integers)
+    ///
+    /// Reads all 8 EXT_SLV_SENS_DATA bytes in a single I2C/SPI transaction
+    /// so the returned (x, y, z) tuple is self-consistent.
     ///
     /// Returns (x, y, z) as raw ADC values without calibration or conversion.
     ///
@@ -6812,50 +6761,7 @@ where
 
         self.select_bank(Bank::Bank0).await?;
 
-        // Read 8 bytes from EXT_SLV_SENS_DATA
-        // Format: HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
-        let data = [
-            self.device
-                .ext_slv_sens_data_00()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_00(),
-            self.device
-                .ext_slv_sens_data_01()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_01(),
-            self.device
-                .ext_slv_sens_data_02()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_02(),
-            self.device
-                .ext_slv_sens_data_03()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_03(),
-            self.device
-                .ext_slv_sens_data_04()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_04(),
-            self.device
-                .ext_slv_sens_data_05()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_05(),
-            self.device
-                .ext_slv_sens_data_06()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_06(),
-            self.device
-                .ext_slv_sens_data_07()
-                .read_async()
-                .await?
-                .ext_slv_sens_data_07(),
-        ];
+        let data = self.read_mag_data_atomic().await?;
 
         // ST2 is at index 7
         let st2 = data[7];
@@ -6864,11 +6770,28 @@ where
         }
 
         // Parse little-endian 16-bit values from HXL..HZH
+        // Format: HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
         let x = i16::from_le_bytes([data[0], data[1]]);
         let y = i16::from_le_bytes([data[2], data[3]]);
         let z = i16::from_le_bytes([data[4], data[5]]);
 
         Ok((x, y, z))
+    }
+
+    /// Read all 8 EXT_SLV_SENS_DATA bytes in a single bus transaction.
+    ///
+    /// Reads registers 0x3B–0x42 atomically so the magnetometer values
+    /// are self-consistent (no inter-read drift from the I2C master).
+    async fn read_mag_data_atomic(&mut self) -> Result<[u8; 8], Error<I::Error>> {
+        let mut buf = [0u8; 8];
+        // EXT_SLV_SENS_DATA starts at 0x3B in Bank 0.
+        // Register address auto-increments for multi-byte reads.
+        self.device
+            .interface
+            .read_register(0x3B, 64, &mut buf)
+            .await
+            .map_err(Error::Bus)?;
+        Ok(buf)
     }
 
     /// Read magnetometer heading (yaw angle) in degrees

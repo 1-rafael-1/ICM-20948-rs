@@ -111,6 +111,10 @@ name = "low_power_mode_async"
 path = "src/low_power_mode_async.rs"
 
 [[bin]]
+name = "magnetometer_raw_validation_async"
+path = "src/magnetometer_raw_validation_async.rs"
+
+[[bin]]
 name = "wake_on_motion_async"
 path = "src/wake_on_motion_async.rs"
 
