@@ -130,13 +130,12 @@ fn test_mag_overflow_detection() {
     // Simulate overflow condition (ST2 bit 3 set)
     interface.set_mag_overflow();
 
-    // Note: We no longer check ST2 overflow bit when reading via I2C master
-    // The I2C master polls automatically, so if we get data, it's valid
-    // This test now verifies we can read even with ST2 overflow set
+    // ST2 overflow is now correctly detected at data[8] (was previously
+    // checking data[7]=TMPS). Magnetic overflow should return an error.
     let result = driver.read_magnetometer();
     assert!(
-        result.is_ok(),
-        "Reading should succeed even with ST2 overflow bit set via I2C master"
+        result.is_err(),
+        "Magnetic overflow (ST2 bit 3) should be detected and return an error"
     );
 }
 

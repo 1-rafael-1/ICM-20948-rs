@@ -25,6 +25,7 @@ struct MockAsyncI2c {
     fifo_data: [u8; 512],
     mag_initialized: bool,
     i2c_slv_4_di: u8, // I2C Slave 4 data in register
+    mag_ext_slv_data: [u8; 8],
     pwr_mgmt_1: u8,
 }
 
@@ -38,6 +39,7 @@ impl MockAsyncI2c {
             fifo_data: [0; 512],
             mag_initialized: false,
             i2c_slv_4_di: 0x09, // AK09916 WHO_AM_I value
+            mag_ext_slv_data: [0; 8],
             pwr_mgmt_1: 0x00,
         }
     }
@@ -63,8 +65,32 @@ impl MockAsyncI2c {
             fifo_data: [0; 512],
             mag_initialized: false,
             i2c_slv_4_di: 0x09,
+            mag_ext_slv_data: [0; 8],
             pwr_mgmt_1: 0x00,
         }
+    }
+
+    fn with_mag_data(x: i16, y: i16, z: i16) -> Self {
+        let mut mock = Self::new();
+        let [x_l, x_h] = x.to_le_bytes();
+        let [y_l, y_h] = y.to_le_bytes();
+        let [z_l, z_h] = z.to_le_bytes();
+        mock.mag_ext_slv_data = [x_l, x_h, y_l, y_h, z_l, z_h, 0x00, 0x00];
+        mock
+    }
+
+    /// Create a mock with magnetometer data and a custom ST2 register value.
+    ///
+    /// The 8-byte layout matches the async atomic read (HXL..ST2):
+    /// `[HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2]`.
+    /// Use `st2 = 0x08` to simulate a magnetic sensor overflow.
+    fn with_mag_data_and_st2(x: i16, y: i16, z: i16, st2: u8) -> Self {
+        let mut mock = Self::new();
+        let [x_l, x_h] = x.to_le_bytes();
+        let [y_l, y_h] = y.to_le_bytes();
+        let [z_l, z_h] = z.to_le_bytes();
+        mock.mag_ext_slv_data = [x_l, x_h, y_l, y_h, z_l, z_h, 0x00, st2];
+        mock
     }
 }
 
@@ -138,7 +164,7 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                         self.pwr_mgmt_1 &= !0x80;
                     }
                 }
-                (3, 0x07) => {
+                (3, 0x15) => {
                     // BANK_3_I2C_SLV_4_CTRL - I2C Slave 4 control
                     // When enabled, simulate magnetometer WHO_AM_I read
                     if (value & 0x80) != 0 {
@@ -215,18 +241,25 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                         read[0] = self.bank << 4;
                     }
                 }
-                0x39 => {
-                    // BANK_3_I2C_SLV_4_DI - I2C Slave 4 data in (magnetometer reads)
+                0x17 => {
+                    // BANK_3_I2C_SLV_4_DI (register 0x17) - magnetometer read data
                     if self.bank == 3 && !read.is_empty() {
                         read[0] = self.i2c_slv_4_di;
+                    } else {
+                        read.fill(0);
                     }
                 }
-                0x3D..=0x4C => {
+                0x3B..=0x52 => {
                     // EXT_SLV_SENS_DATA_00 through EXT_SLV_SENS_DATA_23
                     // Magnetometer data registers (Bank 0)
-                    if self.bank == 0 && !read.is_empty() {
-                        // Return dummy magnetometer data
-                        read[0] = 0;
+                    // Fill all requested bytes sequentially (supports multi-byte atomic reads)
+                    if self.bank == 0 {
+                        let base = (reg - 0x3B) as usize;
+                        for (i, byte) in read.iter_mut().enumerate() {
+                            *byte = self.mag_ext_slv_data.get(base + i).copied().unwrap_or(0);
+                        }
+                    } else {
+                        read.fill(0);
                     }
                 }
                 _ => {
@@ -1041,11 +1074,7 @@ fn test_magnetometer_init() {
 
         let mag_config = MagConfig::default();
         let result = imu.init_magnetometer(mag_config, &mut delay).await;
-
-        // Note: Mock doesn't fully support I2C slave operations for magnetometer,
-        // so we expect an error. This test verifies the method is callable.
-        // Real hardware testing would verify successful initialization.
-        assert!(result.is_err());
+        assert!(result.is_ok());
     });
 }
 
@@ -1074,6 +1103,82 @@ fn test_magnetometer_read_raw() {
         // Read without initialization should fail
         let result = imu.read_magnetometer_raw().await;
         assert!(result.is_err());
+    });
+}
+
+#[test]
+fn test_magnetometer_read_raw_parses_hxl_layout() {
+    block_on(async {
+        const EXPECTED_X: i16 = 0x1234;
+        const EXPECTED_Y: i16 = -0x567;
+        const EXPECTED_Z: i16 = 0x7A55;
+
+        let i2c = MockAsyncI2c::with_mag_data(EXPECTED_X, EXPECTED_Y, EXPECTED_Z);
+        let interface = I2cInterface::default(i2c);
+
+        let mut imu = new_verified(interface).await;
+        let mut delay = MockDelay;
+
+        imu.init_magnetometer(MagConfig::default(), &mut delay)
+            .await
+            .unwrap();
+
+        let result = imu.read_magnetometer_raw().await.unwrap();
+        assert_eq!(result, (EXPECTED_X, EXPECTED_Y, EXPECTED_Z));
+    });
+}
+
+#[test]
+fn test_magnetometer_read_raw_rejects_st2_overflow() {
+    block_on(async {
+        const EXPECTED_X: i16 = 0x1234;
+        const EXPECTED_Y: i16 = -0x567;
+        const EXPECTED_Z: i16 = 0x7A55;
+
+        // ST2 at index 7 with overflow bit (0x08) set
+        let i2c = MockAsyncI2c::with_mag_data_and_st2(EXPECTED_X, EXPECTED_Y, EXPECTED_Z, 0x08);
+        let interface = I2cInterface::default(i2c);
+
+        let mut imu = new_verified(interface).await;
+        let mut delay = MockDelay;
+
+        imu.init_magnetometer(MagConfig::default(), &mut delay)
+            .await
+            .unwrap();
+
+        let result = imu.read_magnetometer_raw().await;
+        assert!(
+            matches!(result, Err(Error::Magnetometer)),
+            "ST2 overflow should be rejected as Error::Magnetometer, got {:?}",
+            result
+        );
+    });
+}
+
+#[test]
+fn test_magnetometer_read_rejects_st2_overflow() {
+    block_on(async {
+        const EXPECTED_X: i16 = 0x1234;
+        const EXPECTED_Y: i16 = -0x567;
+        const EXPECTED_Z: i16 = 0x7A55;
+
+        // ST2 at index 7 with overflow bit (0x08) set
+        let i2c = MockAsyncI2c::with_mag_data_and_st2(EXPECTED_X, EXPECTED_Y, EXPECTED_Z, 0x08);
+        let interface = I2cInterface::default(i2c);
+
+        let mut imu = new_verified(interface).await;
+        let mut delay = MockDelay;
+
+        imu.init_magnetometer(MagConfig::default(), &mut delay)
+            .await
+            .unwrap();
+
+        let result = imu.read_magnetometer().await;
+        assert!(
+            matches!(result, Err(Error::Magnetometer)),
+            "ST2 overflow should be rejected as Error::Magnetometer, got {:?}",
+            result
+        );
     });
 }
 
