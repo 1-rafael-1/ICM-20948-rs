@@ -241,6 +241,8 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                     if self.bank == 0 && !read.is_empty() {
                         let idx = (reg - 0x3B) as usize;
                         read[0] = self.mag_ext_slv_data.get(idx).copied().unwrap_or(0);
+                    } else {
+                        read.fill(0);
                     }
                 }
                 _ => {
