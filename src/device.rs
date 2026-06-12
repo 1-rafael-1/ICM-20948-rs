@@ -6813,7 +6813,7 @@ where
         self.select_bank(Bank::Bank0).await?;
 
         // Read 8 bytes from EXT_SLV_SENS_DATA
-        // Format: ST1, HXL, HXH, HYL, HYH, HZL, HZH, ST2 (AK09916 order)
+        // Format: HXL, HXH, HYL, HYH, HZL, HZH, TMPS, ST2
         let data = [
             self.device
                 .ext_slv_sens_data_00()
@@ -6857,20 +6857,16 @@ where
                 .ext_slv_sens_data_07(),
         ];
 
-        // ST1 is first byte (data[0]) but we do NOT check it when reading via I2C master
-        // The I2C master polls automatically at a fixed rate, so received data is valid
-
         // ST2 is at index 7
         let st2 = data[7];
         if (st2 & 0x08) != 0 {
             return Err(Error::Magnetometer); // Magnetic overflow
         }
 
-        // Parse little-endian 16-bit values
-        // Data starts at index 1: HXL, HXH, HYL, HYH, HZL, HZH
-        let x = i16::from_le_bytes([data[1], data[2]]);
-        let y = i16::from_le_bytes([data[3], data[4]]);
-        let z = i16::from_le_bytes([data[5], data[6]]);
+        // Parse little-endian 16-bit values from HXL..HZH
+        let x = i16::from_le_bytes([data[0], data[1]]);
+        let y = i16::from_le_bytes([data[2], data[3]]);
+        let z = i16::from_le_bytes([data[4], data[5]]);
 
         Ok((x, y, z))
     }
