@@ -281,13 +281,13 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        if self.current_bank != Some(bank) {
-            self.device.reg_bank_sel().write(|w| {
-                w.set_user_bank(bank as u8);
-            })?;
-
-            self.current_bank = Some(bank);
-        }
+        // Always write REG_BANK_SEL — generated register accessors
+        // (e.g., bank_N_*) write it directly without updating current_bank,
+        // so the cache can be stale even when it appears to match.
+        self.device.reg_bank_sel().write(|w| {
+            w.set_user_bank(bank as u8);
+        })?;
+        self.current_bank = Some(bank);
         Ok(())
     }
 
@@ -4475,16 +4475,16 @@ where
     ///
     /// Returns an error if communication with the device fails.
     pub async fn select_bank(&mut self, bank: Bank) -> Result<(), Error<I::Error>> {
-        if self.current_bank != Some(bank) {
-            self.device
-                .reg_bank_sel()
-                .write_async(|w| {
-                    w.set_user_bank(bank as u8);
-                })
-                .await?;
-
-            self.current_bank = Some(bank);
-        }
+        // Always write REG_BANK_SEL — generated register accessors
+        // (e.g., bank_N_*) write it directly without updating current_bank,
+        // so the cache can be stale even when it appears to match.
+        self.device
+            .reg_bank_sel()
+            .write_async(|w| {
+                w.set_user_bank(bank as u8);
+            })
+            .await?;
+        self.current_bank = Some(bank);
         Ok(())
     }
 

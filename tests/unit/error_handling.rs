@@ -252,23 +252,14 @@ fn test_bank_switch_failure_during_read() {
     // Enable bank switch failure
     interface.fail_bank_switch(true);
 
-    // Reading accelerometer requires staying in Bank 0, so this might still work
-    // But any operation requiring bank switch will fail
+    // select_bank() now always writes REG_BANK_SEL (cache removed),
+    // so even reading in Bank 0 triggers a bank-switch write that fails.
     interface.set_accel_data(100, 200, 300);
 
-    // This should succeed since accel data is in Bank 0
     let result = driver.read_accel();
     assert!(
-        result.is_ok(),
-        "Read in same bank should succeed even with bank switch failure enabled"
-    );
-
-    // But configuration that requires bank switch should fail
-    let config = default_accel_config();
-    let result = driver.configure_accelerometer(config);
-    assert!(
         result.is_err(),
-        "Configuration requiring bank switch should fail"
+        "Read in same bank now fails because select_bank always writes REG_BANK_SEL"
     );
 }
 
@@ -285,11 +276,13 @@ fn test_error_clears_operations_log() {
     let _result = driver.read_accel();
 
     // The mock checks fail_next_read *before* appending to the operations log,
-    // so a failed read contributes zero entries. The log must still be empty.
+    // so a failed read contributes zero entries. select_bank() now always
+    // writes REG_BANK_SEL (cache removed), so one bank-switch entry is logged.
     let ops = interface.operations();
-    assert!(
-        ops.is_empty(),
-        "A failed read must not be logged: mock returns before the logging path"
+    assert_eq!(
+        ops.len(),
+        1,
+        "Only the bank-switch write should be logged; the failed read is not"
     );
 }
 

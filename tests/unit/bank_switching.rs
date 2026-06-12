@@ -32,17 +32,19 @@ fn test_bank_switch_noop() {
 
     let ops = interface.operations();
 
-    // Should have one bank switch operation from selecting bank0 in `new`, and no more because
-    // setting the same bank again is a noop
+    // select_bank now always writes REG_BANK_SEL (the cache was removed
+    // because generated register accessors can leave it stale). So even
+    // "staying" in the same bank produces a write.
     let bank_switches: Vec<_> = ops
         .iter()
         .filter(|op| matches!(op, Operation::BankSwitch { .. }))
         .collect();
 
+    // One from try_new(), one from the explicit select_bank(Bank0) above
     assert_eq!(
         bank_switches.len(),
-        1,
-        "No bank switch should occur for same bank"
+        2,
+        "select_bank always writes REG_BANK_SEL now"
     );
 }
 
