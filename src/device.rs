@@ -3615,7 +3615,7 @@ where
         Ok((x, y, z))
     }
 
-    /// Read all 9 EXT_SLV_SENS_DATA bytes in a single bus transaction.
+    /// Read all 9 `EXT_SLV_SENS_DATA` bytes in a single bus transaction.
     ///
     /// Reads registers 0x3B–0x43 atomically (ST1-start layout for blocking path).
     fn read_mag_data_atomic(&mut self) -> Result<[u8; 9], Error<I::Error>> {
