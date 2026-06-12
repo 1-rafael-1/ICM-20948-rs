@@ -47,7 +47,7 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Timer};
-use icm20948::{dmp::DmpConfig, I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig};
+use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
 use panic_probe as _;
 
 /// Firmware image type required by the RP2350 bootloader.
@@ -155,10 +155,16 @@ async fn main(_spawner: Spawner) {
     //   when `pedometer_timestamp` is `Some`, i.e. when a step was actually
     //   detected, to avoid unnecessary bus traffic between steps.
     //
-    // PQuat6 (`pedometer_quaternion`) is cadence-locked: the DMP suppresses
-    //   orientation output when pedestrian motion is absent. You will receive
-    //   FIFO interrupts at 56 Hz regardless, but `pedometer_quaternion` will
-    //   be `None` while the device is stationary.
+    // PQuat6 (`pedometer_quaternion`) outputs **continuously** once the DMP is
+    //   enabled — it is NOT suppressed during quiet periods. The pedestrian-
+    //   optimised fusion algorithm always runs; expect a valid quaternion in
+    //   every FIFO packet.
+    //
+    // Step detection requires **actual walking**: the DMP pedestrian algorithm
+    //   looks for the characteristic footfall acceleration signature (~0.3–0.5 g
+    //   periodic peaks at walking cadence). Tilting, shaking, or rotating the
+    //   device by hand will NOT trigger step events. Attach the device to your
+    //   body (pocket, waistband) and walk normally.
     // -------------------------------------------------------------------------
 
     let mut packet_count = 0u32;
@@ -175,8 +181,8 @@ async fn main(_spawner: Spawner) {
 
             // --- PQuat6: pedestrian-fused orientation ---
             //
-            // Present in FIFO packets only while the pedestrian algorithm detects
-            // motion. Convert the quaternion to Euler angles for human-readable logging.
+            // Present in every FIFO packet once the DMP is enabled.
+            // Convert the quaternion to Euler angles for human-readable logging.
             if let Some(quat) = packet.pedometer_quaternion {
                 let euler = quat.to_euler_angles();
                 let (roll, pitch, mut yaw) = euler.to_degrees();

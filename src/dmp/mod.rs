@@ -62,7 +62,7 @@
 //! # let mut driver: Icm20948Driver<_> = todo!();
 //! driver.dmp_init()?;
 //!
-//! // PQuat6 orientation — cadence-locked, present only during active walking
+//! // PQuat6 orientation — outputs continuously once the DMP is enabled
 //! let config = DmpConfig::pedometer_six_axis()
 //!     .with_step_detector()
 //!     .with_sample_rate(56);
@@ -72,7 +72,8 @@
 //!
 //! loop {
 //!     if let Some(data) = driver.dmp_read_fifo()? {
-//!         // PQuat6: cadence-locked orientation (only present during active walking)
+//!         // PQuat6: pedestrian-fused orientation — outputs continuously once the DMP
+//!         // is enabled; the values reflect the gyro+accel fusion as usual.
 //!         if let Some(quat) = data.pedometer_quaternion {
 //!             let euler = quat.to_euler_angles();
 //!             let (roll, pitch, yaw) = euler.to_degrees();
@@ -139,13 +140,14 @@ pub enum DmpFusionMode {
     /// Pedometer-fused 6-axis quaternion (`PQuat6`).
     ///
     /// Runs the DMP's pedestrian-optimised fusion algorithm using accelerometer and
-    /// gyroscope. Unlike [`Self::SixAxis`] (which runs at a fixed sample rate), PQuat6 output
-    /// is cadence-locked: orientation packets are only emitted during active walking and
-    /// the output rate follows the pedestrian motion cadence.
+    /// gyroscope. PQuat6 outputs continuously once the DMP is enabled — orientation
+    /// packets are present in every FIFO packet, not only during active walking.
     ///
     /// Use this mode together with [`DmpConfig::with_step_detector()`] to also receive
     /// per-step FIFO timestamps, and call `dmp_read_step_count()` on step events to poll
-    /// the cumulative step total from DMP SRAM.
+    /// the cumulative step total from DMP SRAM. Step detection requires actual walking;
+    /// the algorithm looks for the characteristic footfall acceleration signature and
+    /// will not trigger on tilting or hand motion.
     ///
     /// No magnetometer is required.
     PedometerSixAxis,
