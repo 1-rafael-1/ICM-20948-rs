@@ -231,6 +231,8 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                     // BANK_3_I2C_SLV_4_DI (register 0x17) - magnetometer read data
                     if self.bank == 3 && !read.is_empty() {
                         read[0] = self.i2c_slv_4_di;
+                    } else {
+                        read.fill(0);
                     }
                 }
                 0x3B..=0x52 => {
