@@ -18,7 +18,7 @@ This driver is built using the [`device-driver`](https://crates.io/crates/device
 
 **Note**: This driver has been created with the help of agentic AI. Code has been self-reviewed but I am a hobbyist developer and have very little prior experience with IMUs, so I will not have spotted everything. To validate viability so far I have created a number of examples and ran them on hardware. Additionally I have made sure the agent added tests and CI, that run on every PR and every push to `main`. 
 
-I was hoping to make DMP work and was looking for some christmas holidays entertainment making it. I failed at DMP but was duly entertained. In its current form this driver has somewhat more features than other existing ICM-20948 drivers, so I decided to publish it anyway. Somebody somewhere may find it useful.
+I was hoping to make DMP work and was looking for some Christmas holidays entertainment making it. I failed at DMP but was duly entertained. In its current form this driver has somewhat more features than other existing ICM-20948 drivers, so I decided to publish it anyway. Somebody somewhere may find it useful.
 
 That being said, this driver works for me and my hobby needs so far but WILL contain bugs and imperfections.
 In case YOU find any issues, please consider submitting a PR or opening an issue so I can improve this driver over time. Thank you!
@@ -211,7 +211,7 @@ All tests run automatically on every push and pull request.
 ## Documentation
 
 - [API Documentation](https://docs.rs/icm20948-rs)
-- [ICM-20948 Datasheet](https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/)
+- [ICM-20948 Product Page](https://invensense.tdk.com/products/motion-tracking/9-axis/icm-20948/)
 - [device-driver toolkit documentation](https://diondokter.github.io/device-driver/)
 
 ## License
