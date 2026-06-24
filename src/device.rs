@@ -79,6 +79,10 @@ pub struct Icm20948Driver<I> {
     dmp_configured: bool,
     #[cfg(feature = "dmp")]
     dmp_packet_size: usize,
+    // bytes from the next packet accidentally read when the DMP omitted accuracy fields;
+    // max over-read = ACCEL_ACCURACY + GYRO_ACCURACY + COMPASS_ACCURACY = 6
+    #[cfg(feature = "dmp")]
+    dmp_fifo_leftover: Option<([u8; crate::dmp::config::DmpPacketSize::MAX_OVER_READ], u8)>,
 }
 
 #[cfg(not(feature = "async"))]
@@ -109,6 +113,8 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
+            #[cfg(feature = "dmp")]
+            dmp_fifo_leftover: None,
         }
     }
 
@@ -911,13 +917,13 @@ where
     }
 
     #[cfg(feature = "dmp")]
-    /// Read the FIFO_EN_2 register value
+    /// Read the `FIFO_EN_2` register value
     ///
     /// This register controls which sensors route data to the internal FIFO/DMP data bus.
     ///
     /// # Returns
     ///
-    /// Returns the raw FIFO_EN_2 register value (0x00-0xFF).
+    /// Returns the raw `FIFO_EN_2` register value (0x00-0xFF).
     ///
     /// # Errors
     ///
@@ -1360,22 +1366,32 @@ where
         let overflow = self.fifo_overflow_status()?;
         if overflow.any_overflow() {
             self.fifo_reset()?;
+            self.dmp_fifo_leftover = None;
             return Err(Error::FifoOverflow);
         }
 
         // Check FIFO count
         let count = self.read_fifo_count()?;
 
-        // Need at least a primary header (2 bytes)
-        if count < 2 {
+        // Consume any leftover bytes from the previous over-read, then fill up to dmp_packet_size
+        let (leftover, leftover_buf) = match self.dmp_fifo_leftover.take() {
+            Some((buf, len)) => (len as usize, Some(buf)),
+            None => (0, None),
+        };
+        let need = self.dmp_packet_size.saturating_sub(leftover);
+        if (count as usize) < need {
             return Ok(None);
         }
 
         let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        self.read_fifo_raw(&mut packet_buf[0..self.dmp_packet_size])?;
+        if let Some(buf) = leftover_buf {
+            packet_buf[..leftover].copy_from_slice(&buf[..leftover]);
+        }
+        self.read_fifo_raw(&mut packet_buf[leftover..leftover + need])?;
+        let available = leftover + need;
 
         #[cfg(feature = "defmt")]
-        if self.dmp_packet_size > 2 {
+        if available > 2 {
             use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
@@ -1389,8 +1405,7 @@ where
                 (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
             );
 
-            // Show first 8 bytes after header if we have enough payload
-            if self.dmp_packet_size >= 10 {
+            if available >= 10 {
                 defmt::debug!(
                     "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
                     packet_buf[2],
@@ -1406,16 +1421,22 @@ where
         }
 
         let parser = DmpParser::new();
-        if let Some((mut data, _consumed)) =
-            parser.parse_packet(&packet_buf[..self.dmp_packet_size])
-        {
+        if let Some((mut data, consumed)) = parser.parse_packet(&packet_buf[..available]) {
+            let over_read = available - consumed;
+            if over_read > 0 {
+                debug_assert!(over_read <= DmpPacketSize::MAX_OVER_READ);
+                let mut buf = [0u8; DmpPacketSize::MAX_OVER_READ];
+                buf[..over_read].copy_from_slice(&packet_buf[consumed..consumed + over_read]);
+                self.dmp_fifo_leftover = Some((buf, over_read as u8));
+            }
+
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
                 data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
             }
-            return Ok(Some(data));
+            Ok(Some(data))
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 
@@ -1740,7 +1761,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `odr_register` - The ODR register address (e.g., DmpOdrRegisters::QUAT9)
+    /// * `odr_register` - The ODR register address (e.g., `DmpOdrRegisters::QUAT9`)
     /// * `interval` - The ODR interval value (0 = use sensor rate, higher = slower)
     ///
     /// # Notes
@@ -1784,7 +1805,7 @@ where
 
     /// Configure which sensors the DMP should expect data from
     ///
-    /// Writes to the DATA_RDY_STATUS register to indicate which sensors are available.
+    /// Writes to the `DATA_RDY_STATUS` register to indicate which sensors are available.
     /// This is required for DMP operation.
     ///
     /// # Arguments
@@ -1844,7 +1865,7 @@ where
 
     /// Configure DMP motion event control
     ///
-    /// Writes to the MOTION_EVENT_CTL register to enable sensor calibration
+    /// Writes to the `MOTION_EVENT_CTL` register to enable sensor calibration
     /// and 9-axis fusion features.
     ///
     /// # Arguments
@@ -4013,10 +4034,10 @@ where
     /// # Configuration details
     ///
     /// The DMP requires a specific magnetometer setup:
-    /// - **I2C_SLV0**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
+    /// - **`I2C_SLV0`**: Reads 10 bytes starting from AK09916 register 0x03 (RSV2)
     ///   with byte-swap and register grouping enabled
-    /// - **I2C_SLV1**: Triggers single measurement mode on each DMP sample cycle
-    /// - **I2C_MST_ODR_CONFIG**: Sets magnetometer sample rate to ~69 Hz
+    /// - **`I2C_SLV1`**: Triggers single measurement mode on each DMP sample cycle
+    /// - **`I2C_MST_ODR_CONFIG`**: Sets magnetometer sample rate to ~69 Hz
     ///
     /// # Arguments
     ///
@@ -4246,6 +4267,8 @@ where
             dmp_configured: false,
             #[cfg(feature = "dmp")]
             dmp_packet_size: 0,
+            #[cfg(feature = "dmp")]
+            dmp_fifo_leftover: None,
         }
     }
 
@@ -6427,23 +6450,33 @@ where
         let overflow = self.fifo_overflow_status().await?;
         if overflow.any_overflow() {
             self.fifo_reset().await?;
+            self.dmp_fifo_leftover = None;
             return Err(Error::FifoOverflow);
         }
 
         // Check FIFO count
         let count = self.read_fifo_count().await?;
 
-        // Need at least a primary header (2 bytes)
-        if count < 2 {
+        // Consume any leftover bytes from the previous over-read, then fill up to dmp_packet_size
+        let (leftover, leftover_buf) = match self.dmp_fifo_leftover.take() {
+            Some((buf, len)) => (len as usize, Some(buf)),
+            None => (0, None),
+        };
+        let need = self.dmp_packet_size.saturating_sub(leftover);
+        if (count as usize) < need {
             return Ok(None);
         }
 
         let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        self.read_fifo_raw(&mut packet_buf[0..self.dmp_packet_size])
+        if let Some(buf) = leftover_buf {
+            packet_buf[..leftover].copy_from_slice(&buf[..leftover]);
+        }
+        self.read_fifo_raw(&mut packet_buf[leftover..leftover + need])
             .await?;
+        let available = leftover + need;
 
         #[cfg(feature = "defmt")]
-        if self.dmp_packet_size > 2 {
+        if available > 2 {
             use crate::dmp::config::DmpPacketHeader;
             let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
             defmt::debug!(
@@ -6457,8 +6490,7 @@ where
                 (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
             );
 
-            // Show first 8 bytes after header if we have enough payload
-            if self.dmp_packet_size >= 10 {
+            if available >= 10 {
                 defmt::debug!(
                     "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
                     packet_buf[2],
@@ -6474,9 +6506,15 @@ where
         }
 
         let parser = DmpParser::new();
-        if let Some((mut data, _consumed)) =
-            parser.parse_packet(&packet_buf[..self.dmp_packet_size])
-        {
+        if let Some((mut data, consumed)) = parser.parse_packet(&packet_buf[..available]) {
+            let over_read = available - consumed;
+            if over_read > 0 {
+                debug_assert!(over_read <= DmpPacketSize::MAX_OVER_READ);
+                let mut buf = [0u8; DmpPacketSize::MAX_OVER_READ];
+                buf[..over_read].copy_from_slice(&packet_buf[consumed..consumed + over_read]);
+                self.dmp_fifo_leftover = Some((buf, over_read as u8));
+            }
+
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
                 data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
@@ -6657,7 +6695,7 @@ where
 
     /// Read raw magnetometer data (16-bit signed integers)
     ///
-    /// Reads all 8 EXT_SLV_SENS_DATA bytes in a single I2C/SPI transaction
+    /// Reads all 8 `EXT_SLV_SENS_DATA` bytes in a single I2C/SPI transaction
     /// so the returned (x, y, z) tuple is self-consistent.
     ///
     /// Returns (x, y, z) as raw ADC values without calibration or conversion.
@@ -6689,7 +6727,7 @@ where
         Ok((x, y, z))
     }
 
-    /// Read all 8 EXT_SLV_SENS_DATA bytes in a single bus transaction.
+    /// Read all 8 `EXT_SLV_SENS_DATA` bytes in a single bus transaction.
     ///
     /// Reads registers 0x3B–0x42 atomically so the magnetometer values
     /// are self-consistent (no inter-read drift from the I2C master).

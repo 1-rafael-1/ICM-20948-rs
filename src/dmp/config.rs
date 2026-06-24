@@ -942,6 +942,10 @@ impl DmpPacketSize {
 
     /// Absolute maximum possible packet size for buffer allocation
     pub const MAX_PACKET_SIZE: usize = 128;
+
+    /// Maximum bytes that can be over-read per packet when all accuracy fields are absent
+    pub const MAX_OVER_READ: usize =
+        Self::ACCEL_ACCURACY + Self::GYRO_ACCURACY + Self::COMPASS_ACCURACY;
 }
 
 impl DmpConfig {
