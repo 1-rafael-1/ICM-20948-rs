@@ -940,8 +940,29 @@ impl DmpPacketSize {
     /// Size of Pressure sensor data (6 bytes)
     pub const PRESSURE: usize = 6;
 
-    /// Absolute maximum possible packet size for buffer allocation
-    pub const MAX_PACKET_SIZE: usize = 128;
+    /// Absolute maximum possible packet size for buffer allocation —
+    /// sum of every field the parser can produce; no field can push beyond this
+    pub const MAX_PACKET_SIZE: usize = Self::HEADER
+        + Self::HEADER2
+        + Self::ACCEL_ACCURACY
+        + Self::GYRO_ACCURACY
+        + Self::COMPASS_ACCURACY
+        + Self::ACCEL_COMPASS  // accel
+        + Self::RAW_GYRO
+        + Self::ACCEL_COMPASS  // compass
+        + Self::ALS
+        + Self::QUAT6
+        + Self::QUAT9
+        + Self::PQUAT6
+        + Self::QUAT9          // geomag uses same 14-byte layout
+        + Self::PRESSURE
+        + Self::CAL_COMPASS
+        + Self::PEDOMETER
+        + Self::FOOTER;
+
+    /// Maximum bytes that can be over-read per packet when all accuracy fields are absent
+    pub const MAX_OVER_READ: usize =
+        Self::ACCEL_ACCURACY + Self::GYRO_ACCURACY + Self::COMPASS_ACCURACY;
 }
 
 impl DmpConfig {
@@ -1039,9 +1060,7 @@ impl DmpConfig {
         if c1.contains(DmpControl1Flags::QUAT9) || c1.contains(DmpControl1Flags::GEOMAG) {
             size += DmpPacketSize::QUAT9;
         }
-        if c1.contains(DmpControl1Flags::CALIBRATED_GYRO) {
-            size += DmpPacketSize::CAL_GYRO;
-        }
+        // CALIBRATED_GYRO: DMP sets GYRO_CAL_BIT as a status flag but writes no bytes
         if c1.contains(DmpControl1Flags::CALIBRATED_COMPASS) {
             size += DmpPacketSize::CAL_COMPASS;
         }
@@ -1420,9 +1439,8 @@ mod tests {
         //   ACCEL_COMPASS   (6)  — raw accel enabled implicitly by host_calibrated_accel
         //   RAW_GYRO       (12)  — raw gyro + bias, enabled implicitly by calibrated_gyro
         //   QUAT6          (12)  — six_axis fusion output
-        //   CAL_GYRO       (12)  — DMP-calibrated gyro output
         //   Footer          (2)
-        //   Total = 52
+        //   Total = 40  (CAL_GYRO excluded: DMP sets GYRO_CAL_BIT as a flag but writes no bytes)
         let expected = DmpPacketSize::HEADER
             + DmpPacketSize::HEADER2
             + DmpPacketSize::ACCEL_ACCURACY
@@ -1430,7 +1448,6 @@ mod tests {
             + DmpPacketSize::ACCEL_COMPASS
             + DmpPacketSize::RAW_GYRO
             + DmpPacketSize::QUAT6
-            + DmpPacketSize::CAL_GYRO
             + DmpPacketSize::FOOTER;
         assert_eq!(size, expected);
     }

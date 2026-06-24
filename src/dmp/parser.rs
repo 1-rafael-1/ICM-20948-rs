@@ -104,9 +104,7 @@ impl DmpParser {
         if header & DmpPacketHeader::PRESSURE_BIT != 0 {
             size += DmpPacketSize::PRESSURE;
         }
-        if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
-            size += DmpPacketSize::CAL_GYRO; // 12 bytes
-        }
+        // GYRO_CAL_BIT: the DMP sets this bit as a status flag but never writes bytes to FIFO
         if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {
             size += DmpPacketSize::CAL_COMPASS; // 12 bytes
         }
@@ -175,9 +173,9 @@ impl DmpParser {
 
             if let (Some(raw_gyro), Some(gyro_bias)) = (dmp_data.raw_gyro, dmp_data.gyro_bias) {
                 dmp_data.calibrated_gyro = Some((
-                    raw_gyro.0 - gyro_bias.0,
-                    raw_gyro.1 - gyro_bias.1,
-                    raw_gyro.2 - gyro_bias.2,
+                    i32::from(raw_gyro.0) - i32::from(gyro_bias.0),
+                    i32::from(raw_gyro.1) - i32::from(gyro_bias.1),
+                    i32::from(raw_gyro.2) - i32::from(gyro_bias.2),
                 ));
             }
 
@@ -247,14 +245,7 @@ impl DmpParser {
             offset += DmpPacketSize::PRESSURE;
         }
 
-        // 10. Calibrated Gyroscope (12 bytes)
-        if header & DmpPacketHeader::GYRO_CAL_BIT != 0 {
-            if data.len() < offset + DmpPacketSize::CAL_GYRO {
-                return None;
-            }
-            dmp_data.dmp_calibrated_gyro = self.parse_calibrated_gyro(&data[offset..]);
-            offset += DmpPacketSize::CAL_GYRO;
-        }
+        // 10. GYRO_CAL_BIT is a status flag only — the DMP never writes bytes for it
 
         // 11. Calibrated Compass (12 bytes)
         if header & DmpPacketHeader::COMPASS_CAL_BIT != 0 {
@@ -717,5 +708,60 @@ mod tests {
         let result = parser.parse_packet(&data);
 
         assert!(result.is_none());
+    }
+
+    // Nine-axis packet without COMPASS_ACCURACY in header2: consumed should be 20, not 22
+    // This is the common case — compass accuracy only changes occasionally
+    #[test]
+    fn test_nine_axis_without_compass_accuracy_consumed() {
+        use super::super::config::{DmpPacketHeader, DmpPacketSize};
+
+        let parser = DmpParser::new();
+
+        // header: QUAT9_BIT | HEADER2_BIT
+        let header: u16 = DmpPacketHeader::QUAT9_BIT | DmpPacketHeader::HEADER2_BIT;
+        // header2: no accuracy bits set this packet
+        let header2: u16 = 0x0000;
+        // QUAT9: 12 bytes xyz (all zero = identity) + 2 bytes accuracy
+        let quat9 = [0u8; DmpPacketSize::QUAT9];
+        let footer = [0u8; DmpPacketSize::FOOTER];
+        // 2 "next packet" bytes that should NOT be consumed
+        let next_packet_start = [0xAB, 0xCD];
+
+        let mut data = [0u8; 22];
+        data[0..2].copy_from_slice(&header.to_be_bytes());
+        data[2..4].copy_from_slice(&header2.to_be_bytes());
+        data[4..18].copy_from_slice(&quat9);
+        data[18..20].copy_from_slice(&footer);
+        data[20..22].copy_from_slice(&next_packet_start);
+
+        let (_, consumed) = parser.parse_packet(&data).unwrap();
+        assert_eq!(consumed, 20);
+        // over_read = 2, within MAX_OVER_READ = 6
+        assert!(22 - consumed <= DmpPacketSize::MAX_OVER_READ);
+    }
+
+    // Nine-axis packet WITH COMPASS_ACCURACY in header2: consumed should be 22
+    #[test]
+    fn test_nine_axis_with_compass_accuracy_consumed() {
+        use super::super::config::{DmpPacketHeader, DmpPacketHeader2, DmpPacketSize};
+
+        let parser = DmpParser::new();
+
+        let header: u16 = DmpPacketHeader::QUAT9_BIT | DmpPacketHeader::HEADER2_BIT;
+        let header2: u16 = DmpPacketHeader2::COMPASS_ACCURACY_BIT;
+        let quat9 = [0u8; DmpPacketSize::QUAT9];
+        let compass_acc: u16 = 3;
+        let footer = [0u8; DmpPacketSize::FOOTER];
+
+        let mut data = [0u8; 22];
+        data[0..2].copy_from_slice(&header.to_be_bytes());
+        data[2..4].copy_from_slice(&header2.to_be_bytes());
+        data[4..18].copy_from_slice(&quat9);
+        data[18..20].copy_from_slice(&compass_acc.to_be_bytes());
+        data[20..22].copy_from_slice(&footer);
+
+        let (_, consumed) = parser.parse_packet(&data).unwrap();
+        assert_eq!(consumed, 22);
     }
 }

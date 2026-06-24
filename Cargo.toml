@@ -1,6 +1,6 @@
 [package]
 name = "icm20948-rs"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["rafael.koch@gmx.net"]
 license = "MIT"
@@ -13,7 +13,9 @@ categories = ["embedded", "hardware-support", "no-std"]
 name = "icm20948"
 
 [dependencies]
-device-driver = { version = "1.0", default-features = false, features = ["dsl"] }
+device-driver = { version = "1.0", default-features = false, features = [
+	"dsl",
+] }
 embedded-hal = "1.0"
 embedded-hal-async = { version = "1.0", optional = true }
 defmt = { version = "1.0.1", optional = true }
