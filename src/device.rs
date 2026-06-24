@@ -77,12 +77,6 @@ pub struct Icm20948Driver<I> {
     dmp_firmware_loaded: bool,
     #[cfg(feature = "dmp")]
     dmp_configured: bool,
-    #[cfg(feature = "dmp")]
-    dmp_packet_size: usize,
-    // bytes from the next packet accidentally read when the DMP omitted accuracy fields;
-    // max over-read = ACCEL_ACCURACY + GYRO_ACCURACY + COMPASS_ACCURACY = 6
-    #[cfg(feature = "dmp")]
-    dmp_fifo_leftover: Option<([u8; crate::dmp::config::DmpPacketSize::MAX_OVER_READ], u8)>,
 }
 
 #[cfg(not(feature = "async"))]
@@ -111,10 +105,6 @@ where
             dmp_firmware_loaded: false,
             #[cfg(feature = "dmp")]
             dmp_configured: false,
-            #[cfg(feature = "dmp")]
-            dmp_packet_size: 0,
-            #[cfg(feature = "dmp")]
-            dmp_fifo_leftover: None,
         }
     }
 
@@ -1238,8 +1228,6 @@ where
             self.write_dmp_memory(write.address, write.data)?;
         }
 
-        self.dmp_packet_size = config.packet_size();
-
         #[cfg(feature = "dmp")]
         {
             self.dmp_configured = true;
@@ -1361,75 +1349,48 @@ where
     #[cfg(feature = "dmp")]
     pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::DmpPacketSize;
+        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
 
         let overflow = self.fifo_overflow_status()?;
         if overflow.any_overflow() {
             self.fifo_reset()?;
-            self.dmp_fifo_leftover = None;
             return Err(Error::FifoOverflow);
         }
 
-        // Check FIFO count
-        let count = self.read_fifo_count()?;
-
-        // Consume any leftover bytes from the previous over-read, then fill up to dmp_packet_size
-        let (leftover, leftover_buf) = match self.dmp_fifo_leftover.take() {
-            Some((buf, len)) => (len as usize, Some(buf)),
-            None => (0, None),
-        };
-        let need = self.dmp_packet_size.saturating_sub(leftover);
-        if (count as usize) < need {
+        // Minimum packet is header(2) + footer(2) = 4 bytes, so HEADER_BLOCK is always safe
+        const HEADER_BLOCK: usize = DmpPacketSize::HEADER + DmpPacketSize::HEADER2;
+        let mut remaining_count = self.read_fifo_count()? as usize;
+        if remaining_count < HEADER_BLOCK {
             return Ok(None);
         }
 
+        // Read header + header2 together. If HEADER2_BIT is not set, bytes [2..4] are the
+        // first 2 payload bytes — already at the right buffer offset for parse_packet.
         let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        if let Some(buf) = leftover_buf {
-            packet_buf[..leftover].copy_from_slice(&buf[..leftover]);
-        }
-        self.read_fifo_raw(&mut packet_buf[leftover..leftover + need])?;
-        let available = leftover + need;
+        self.read_fifo_raw(&mut packet_buf[..HEADER_BLOCK])?;
+        remaining_count -= HEADER_BLOCK;
+        let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
+        let header2 = if header & DmpPacketHeader::HEADER2_BIT != 0 {
+            Some(u16::from_be_bytes([packet_buf[2], packet_buf[3]]))
+        } else {
+            None
+        };
 
-        #[cfg(feature = "defmt")]
-        if available > 2 {
-            use crate::dmp::config::DmpPacketHeader;
-            let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
-            defmt::debug!(
-                "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
-                header,
-                (header & DmpPacketHeader::QUAT6_BIT) != 0,
-                (header & DmpPacketHeader::QUAT9_BIT) != 0,
-                (header & DmpPacketHeader::ACCEL_BIT) != 0,
-                (header & DmpPacketHeader::GYRO_BIT) != 0,
-                (header & DmpPacketHeader::GYRO_CAL_BIT) != 0,
-                (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
-            );
+        let exact_size = DmpParser::calculate_packet_size(header, header2);
+        let payload = exact_size.saturating_sub(HEADER_BLOCK);
 
-            if available >= 10 {
-                defmt::debug!(
-                    "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    packet_buf[2],
-                    packet_buf[3],
-                    packet_buf[4],
-                    packet_buf[5],
-                    packet_buf[6],
-                    packet_buf[7],
-                    packet_buf[8],
-                    packet_buf[9]
-                );
+        if payload > 0 {
+            if remaining_count < payload {
+                remaining_count = self.read_fifo_count()? as usize;
+                if remaining_count < payload {
+                    return Ok(None);
+                }
             }
+            self.read_fifo_raw(&mut packet_buf[HEADER_BLOCK..exact_size])?;
         }
 
         let parser = DmpParser::new();
-        if let Some((mut data, consumed)) = parser.parse_packet(&packet_buf[..available]) {
-            let over_read = available - consumed;
-            if over_read > 0 {
-                debug_assert!(over_read <= DmpPacketSize::MAX_OVER_READ);
-                let mut buf = [0u8; DmpPacketSize::MAX_OVER_READ];
-                buf[..over_read].copy_from_slice(&packet_buf[consumed..consumed + over_read]);
-                self.dmp_fifo_leftover = Some((buf, over_read as u8));
-            }
-
+        if let Some((mut data, _consumed)) = parser.parse_packet(&packet_buf[..exact_size]) {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
                 data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
@@ -4265,10 +4226,6 @@ where
             dmp_firmware_loaded: false,
             #[cfg(feature = "dmp")]
             dmp_configured: false,
-            #[cfg(feature = "dmp")]
-            dmp_packet_size: 0,
-            #[cfg(feature = "dmp")]
-            dmp_fifo_leftover: None,
         }
     }
 
@@ -6294,8 +6251,6 @@ where
                 .await?;
         }
 
-        self.dmp_packet_size = config.packet_size();
-
         #[cfg(feature = "dmp")]
         {
             self.dmp_configured = true;
@@ -6445,76 +6400,48 @@ where
     #[cfg(feature = "dmp")]
     pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
         use crate::dmp::DmpParser;
-        use crate::dmp::config::DmpPacketSize;
+        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
 
         let overflow = self.fifo_overflow_status().await?;
         if overflow.any_overflow() {
             self.fifo_reset().await?;
-            self.dmp_fifo_leftover = None;
             return Err(Error::FifoOverflow);
         }
 
-        // Check FIFO count
-        let count = self.read_fifo_count().await?;
-
-        // Consume any leftover bytes from the previous over-read, then fill up to dmp_packet_size
-        let (leftover, leftover_buf) = match self.dmp_fifo_leftover.take() {
-            Some((buf, len)) => (len as usize, Some(buf)),
-            None => (0, None),
-        };
-        let need = self.dmp_packet_size.saturating_sub(leftover);
-        if (count as usize) < need {
+        const HEADER_BLOCK: usize = DmpPacketSize::HEADER + DmpPacketSize::HEADER2;
+        let mut remaining_count = self.read_fifo_count().await? as usize;
+        if remaining_count < HEADER_BLOCK {
             return Ok(None);
         }
 
+        // Read header + header2 together. If HEADER2_BIT is not set, bytes [2..4] are the
+        // first 2 payload bytes — already at the right buffer offset for parse_packet.
         let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        if let Some(buf) = leftover_buf {
-            packet_buf[..leftover].copy_from_slice(&buf[..leftover]);
-        }
-        self.read_fifo_raw(&mut packet_buf[leftover..leftover + need])
-            .await?;
-        let available = leftover + need;
+        self.read_fifo_raw(&mut packet_buf[..HEADER_BLOCK]).await?;
+        remaining_count -= HEADER_BLOCK;
+        let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
+        let header2 = if header & DmpPacketHeader::HEADER2_BIT != 0 {
+            Some(u16::from_be_bytes([packet_buf[2], packet_buf[3]]))
+        } else {
+            None
+        };
 
-        #[cfg(feature = "defmt")]
-        if available > 2 {
-            use crate::dmp::config::DmpPacketHeader;
-            let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
-            defmt::debug!(
-                "DMP FIFO header: 0x{:04X} (QUAT6={} QUAT9={} ACCEL={} GYRO={} CAL_GYRO={} COMPASS_CAL={})",
-                header,
-                (header & DmpPacketHeader::QUAT6_BIT) != 0,
-                (header & DmpPacketHeader::QUAT9_BIT) != 0,
-                (header & DmpPacketHeader::ACCEL_BIT) != 0,
-                (header & DmpPacketHeader::GYRO_BIT) != 0,
-                (header & DmpPacketHeader::GYRO_CAL_BIT) != 0,
-                (header & DmpPacketHeader::COMPASS_CAL_BIT) != 0
-            );
+        let exact_size = DmpParser::calculate_packet_size(header, header2);
+        let payload = exact_size.saturating_sub(HEADER_BLOCK);
 
-            if available >= 10 {
-                defmt::debug!(
-                    "First payload bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    packet_buf[2],
-                    packet_buf[3],
-                    packet_buf[4],
-                    packet_buf[5],
-                    packet_buf[6],
-                    packet_buf[7],
-                    packet_buf[8],
-                    packet_buf[9]
-                );
+        if payload > 0 {
+            if remaining_count < payload {
+                remaining_count = self.read_fifo_count().await? as usize;
+                if remaining_count < payload {
+                    return Ok(None);
+                }
             }
+            self.read_fifo_raw(&mut packet_buf[HEADER_BLOCK..exact_size])
+                .await?;
         }
 
         let parser = DmpParser::new();
-        if let Some((mut data, consumed)) = parser.parse_packet(&packet_buf[..available]) {
-            let over_read = available - consumed;
-            if over_read > 0 {
-                debug_assert!(over_read <= DmpPacketSize::MAX_OVER_READ);
-                let mut buf = [0u8; DmpPacketSize::MAX_OVER_READ];
-                buf[..over_read].copy_from_slice(&packet_buf[consumed..consumed + over_read]);
-                self.dmp_fifo_leftover = Some((buf, over_read as u8));
-            }
-
+        if let Some((mut data, _consumed)) = parser.parse_packet(&packet_buf[..exact_size]) {
             if let Some(raw) = data.raw_accel {
                 let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
                 data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
