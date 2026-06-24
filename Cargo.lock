@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "icm20948-rs"
-version = "0.3.0"
+version = "0.2.3"
 dependencies = [
  "approx",
  "bitflags 2.11.0",
