@@ -550,6 +550,19 @@ impl DmpFeatures {
         if self.intersects(Self::STEP_DETECTOR | Self::STEP_COUNTER) {
             c1.insert(DmpControl1Flags::STEP_DETECTOR);
         }
+        // HEADER2 is the 2-byte secondary header word that announces which
+        // accuracy fields follow later in the packet (DATA_OUT_CTL2).
+        //
+        // It is enabled when:
+        //   - accuracy bytes are in use (as_control2() non-empty), OR
+        //   - a step event is active (the step-indicator bits live in HEADER2), OR
+        //   - standard fusion outputs (QUAT6/QUAT9/GEOMAG) are enabled, because
+        //     those modes are almost always paired with accuracy reporting.
+        //
+        // QUATERNION_P6AXIS (PQuat6) is intentionally absent from this condition:
+        // PQuat6 is a lightweight 6-byte output with no associated accuracy fields
+        // in DATA_OUT_CTL2. Adding HEADER2 when it is empty would waste 2 bytes
+        // per packet. The parser handles PQuat6 packets without a HEADER2 word.
         // Must include HEADER2 (0x0008) ONLY IF CTL2 is used OR pedometer is active
         if !self.as_control2().is_empty()
             || self.intersects(Self::STEP_DETECTOR | Self::STEP_COUNTER)
@@ -576,6 +589,7 @@ impl DmpFeatures {
 
         if self.intersects(
             Self::QUATERNION_6AXIS
+                | Self::QUATERNION_P6AXIS
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_ACCEL
@@ -587,6 +601,7 @@ impl DmpFeatures {
         }
         if self.intersects(
             Self::QUATERNION_6AXIS
+                | Self::QUATERNION_P6AXIS
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_GYRO
@@ -611,6 +626,7 @@ impl DmpFeatures {
 
         if self.intersects(
             Self::QUATERNION_6AXIS
+                | Self::QUATERNION_P6AXIS
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_ACCEL
@@ -620,6 +636,7 @@ impl DmpFeatures {
         }
         if self.intersects(
             Self::QUATERNION_6AXIS
+                | Self::QUATERNION_P6AXIS
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
                 | Self::RAW_GYRO
@@ -743,6 +760,31 @@ impl DmpMemoryAddresses {
 
     /// Compass time buffer (magnetometer sample rate)
     pub const CPASS_TIME_BUFFER: u16 = 0x070E;
+
+    /// DMP SRAM address of the cumulative step counter (4 bytes, big-endian u32).
+    /// Read with `dmp_read_step_count()`. Source: PEDSTD_STEPCTR in ICM_20948_DMP.h
+    pub const PEDSTD_STEPCTR: u16 = 54 * 16; // 0x0360
+
+    /// DMP SRAM address of the extended (high-word) step counter (4 bytes).
+    ///
+    /// This word would only become non-zero after approximately 4 billion steps,
+    /// which is physically impossible in a single DMP session (power cycling
+    /// resets the DMP and clears both counter words to zero). For this reason,
+    /// `dmp_read_step_count()` reads only `PEDSTD_STEPCTR` (the low word).
+    ///
+    /// This constant is provided for completeness and for applications that
+    /// want to verify the high word is zero as a sanity check.
+    ///
+    /// Source: `PEDSTD_STEPCTR2` in `ICM_20948_DMP.h`
+    pub const PEDSTD_STEPCTR2: u16 = 58 * 16 + 8; // 0x03A8
+
+    /// DMP SRAM address of the last step-event timestamp (4 bytes).
+    /// Source: STPDET_TIMESTAMP in ICM_20948_DMP.h
+    pub const STPDET_TIMESTAMP: u16 = 18 * 16 + 8; // 0x0128
+
+    /// DMP SRAM address of the step indicator bits.
+    /// Source: PEDSTEP_IND in ICM_20948_DMP.h
+    pub const PEDSTEP_IND: u16 = 19 * 16 + 4; // 0x0134
 }
 
 /// DMP Output Data Rate (ODR) register addresses
@@ -1010,9 +1052,6 @@ impl DmpConfig {
         }
         if self.step_detector {
             f.insert(DmpFeatures::STEP_DETECTOR);
-        }
-        if self.step_counter {
-            f.insert(DmpFeatures::STEP_COUNTER);
         }
 
         f
@@ -1571,5 +1610,127 @@ mod tests {
         // Should extrapolate using 112-225 slope
         // Gyro div should be small for high rate
         assert!(rate.gyro_div <= 3); // 1100/300 ≈ 3.67
+    }
+
+    #[test]
+    fn test_pquat6_data_ready_includes_accel_and_gyro() {
+        let config = DmpConfig::pedometer_six_axis();
+        let features = config.get_active_features();
+        let rdy = features.as_data_ready();
+        assert!(
+            rdy.contains(DmpDataReadyStatus::ACCEL),
+            "PQuat6 must trigger ACCEL data ready"
+        );
+        assert!(
+            rdy.contains(DmpDataReadyStatus::GYRO),
+            "PQuat6 must trigger GYRO data ready"
+        );
+    }
+
+    #[test]
+    fn test_pquat6_motion_event_includes_calibration() {
+        let config = DmpConfig::pedometer_six_axis();
+        let features = config.get_active_features();
+        let me = features.as_motion_event();
+        assert!(
+            me.contains(DmpMotionEventControl::ACCEL_CALIBR),
+            "PQuat6 must enable ACCEL_CALIBR"
+        );
+        assert!(
+            me.contains(DmpMotionEventControl::GYRO_CALIBR),
+            "PQuat6 must enable GYRO_CALIBR"
+        );
+    }
+
+    #[test]
+    fn test_pedometer_step_detector_data_ready_and_motion_event() {
+        let config = DmpConfig::new().with_step_detector();
+        let features = config.get_active_features();
+        let rdy = features.as_data_ready();
+        let me = features.as_motion_event();
+        assert!(
+            rdy.contains(DmpDataReadyStatus::ACCEL),
+            "step detector must trigger ACCEL data ready"
+        );
+        assert!(
+            me.contains(DmpMotionEventControl::PEDOMETER_INTERRUPT),
+            "step detector must set PEDOMETER_INTERRUPT"
+        );
+    }
+
+    #[test]
+    fn test_pedometer_memory_addresses() {
+        assert_eq!(DmpMemoryAddresses::PEDSTD_STEPCTR, 0x0360);
+        assert_eq!(DmpMemoryAddresses::PEDSTD_STEPCTR2, 0x03A8);
+        assert_eq!(DmpMemoryAddresses::STPDET_TIMESTAMP, 0x0128);
+        assert_eq!(DmpMemoryAddresses::PEDSTEP_IND, 0x0134);
+    }
+
+    #[test]
+    fn test_packet_size_pedometer_six_axis_with_step_detector() {
+        // pedometer_six_axis() + with_step_detector() produces:
+        //   Header (2) + Header2 (2) + PQuat6 (6) + Step/Pedometer (4) + Footer (2) = 16 bytes
+        let config = DmpConfig::pedometer_six_axis().with_step_detector();
+        let size = config.packet_size();
+        assert_eq!(
+            size, 16,
+            "pedometer_six_axis + step_detector packet size should be 16 bytes, got {}",
+            size
+        );
+
+        // Verify the control1 flags include both PQUAT6 and STEP_DETECTOR
+        let features = config.get_active_features();
+        let c1 = features.as_control1();
+        assert!(
+            c1.contains(DmpControl1Flags::PQUAT6),
+            "PQUAT6 bit must be set"
+        );
+        assert!(
+            c1.contains(DmpControl1Flags::STEP_DETECTOR),
+            "STEP_DETECTOR bit must be set"
+        );
+        assert!(
+            c1.contains(DmpControl1Flags::HEADER2),
+            "HEADER2 must be set when step_detector is active"
+        );
+    }
+
+    #[test]
+    fn test_packet_size_step_detector_only() {
+        // step detector only (no fusion): Header (2) + Header2 (2) + Pedometer (4) + Footer (2) = 10 bytes
+        let config = DmpConfig::new().with_step_detector();
+        let size = config.packet_size();
+        assert_eq!(
+            size, 10,
+            "step_detector-only packet size should be 10 bytes, got {}",
+            size
+        );
+    }
+
+    #[test]
+    fn test_packet_size_pedometer_six_axis_only() {
+        // PQuat6 without step detector: HEADER2 is not needed because
+        // DATA_OUT_CTL2 is empty (no accuracy bytes). If HEADER2 were
+        // mistakenly added here the packet size would be 12, not 10.
+        //
+        // Header (2) + PQuat6 (6) + Footer (2) = 10 bytes
+        let config = DmpConfig::pedometer_six_axis();
+        let size = config.packet_size();
+        assert_eq!(
+            size, 10,
+            "pedometer_six_axis alone should be 10 bytes, got {}",
+            size
+        );
+
+        let features = config.get_active_features();
+        let c1 = features.as_control1();
+        assert!(
+            c1.contains(DmpControl1Flags::PQUAT6),
+            "PQUAT6 bit must be set"
+        );
+        assert!(
+            !c1.contains(DmpControl1Flags::HEADER2),
+            "HEADER2 must NOT be set for PQUAT6 without step detector or accuracy bytes"
+        );
     }
 }

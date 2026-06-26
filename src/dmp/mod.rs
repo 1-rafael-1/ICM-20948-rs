@@ -52,6 +52,44 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! ## Pedometer Usage
+//!
+//! The DMP supports step detection and a pedometer-fused orientation output (`PQuat6`).
+//! No magnetometer is required.
+//!
+//! ```ignore
+//! # use icm20948::{Icm20948Driver, dmp::DmpConfig};
+//! # let mut driver: Icm20948Driver<_> = todo!();
+//! driver.dmp_init()?;
+//!
+//! // PQuat6 orientation — outputs continuously once the DMP is enabled
+//! let config = DmpConfig::pedometer_six_axis()
+//!     .with_step_detector()
+//!     .with_sample_rate(56);
+//!
+//! driver.dmp_configure(&config)?;
+//! driver.dmp_enable(true)?;
+//!
+//! loop {
+//!     if let Some(data) = driver.dmp_read_fifo()? {
+//!         // PQuat6: pedestrian-fused orientation — outputs continuously once the DMP
+//!         // is enabled; the values reflect the gyro+accel fusion as usual.
+//!         if let Some(quat) = data.pedometer_quaternion {
+//!             let euler = quat.to_euler_angles();
+//!             let (roll, pitch, yaw) = euler.to_degrees();
+//!             println!("Orientation: roll={:.1}° pitch={:.1}° yaw={:.1}°", roll, pitch, yaw);
+//!         }
+//!         // Step event: pedometer_timestamp is a DMP cycle counter, NOT wall-clock time.
+//!         // Call dmp_read_step_count() separately to get the running total from DMP SRAM.
+//!         if data.pedometer_timestamp.is_some() {
+//!             let steps = driver.dmp_read_step_count()?;
+//!             println!("Step detected! Total steps: {}", steps);
+//!         }
+//!     }
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ## Power Consumption
 //!
 //! Using the DMP typically provides **lower power consumption** compared to
@@ -100,6 +138,18 @@ pub enum DmpFusionMode {
     /// `dmp_configure()`.
     GeomagRotationVector,
     /// Pedometer-fused 6-axis quaternion (`PQuat6`).
+    ///
+    /// Runs the DMP's pedestrian-optimised fusion algorithm using accelerometer and
+    /// gyroscope. PQuat6 outputs continuously once the DMP is enabled — orientation
+    /// packets are present in every FIFO packet, not only during active walking.
+    ///
+    /// Use this mode together with [`DmpConfig::with_step_detector()`] to also receive
+    /// per-step FIFO timestamps, and call `dmp_read_step_count()` on step events to poll
+    /// the cumulative step total from DMP SRAM. Step detection requires actual walking;
+    /// the algorithm looks for the characteristic footfall acceleration signature and
+    /// will not trigger on tilting or hand motion.
+    ///
+    /// No magnetometer is required.
     PedometerSixAxis,
 }
 
@@ -132,9 +182,6 @@ pub struct DmpConfig {
 
     /// Enable pedometer step detector (triggers an event on step)
     pub step_detector: bool,
-
-    /// Enable pedometer step counter (tracks total steps)
-    pub step_counter: bool,
 
     // /// Enable significant motion detection (not implemented yet)
     // pub significant_motion: bool,
@@ -171,7 +218,6 @@ impl DmpConfig {
             raw_gyro: false,
             raw_mag: false,
             step_detector: false,
-            step_counter: false,
             sample_rate: 100,
         }
     }
@@ -252,15 +298,20 @@ impl DmpConfig {
         self
     }
 
-    /// Enable pedometer step detector.
+    /// Enable the pedometer step detector.
+    ///
+    /// When enabled, each DMP FIFO packet that contains a step event will have
+    /// `DmpData::pedometer_timestamp` set to the DMP's internal cycle counter at the
+    /// moment the step was detected. This is **not** a wall-clock timestamp; it is
+    /// useful for calculating cadence (time between steps) relative to other events.
+    ///
+    /// To get the running total of steps, call `dmp_read_step_count()` after observing
+    /// a non-`None` `pedometer_timestamp`. That method reads DMP SRAM directly and is a
+    /// separate I2C transaction — only call it when you know a step occurred.
+    ///
+    /// Can be combined with any fusion mode, including [`DmpConfig::pedometer_six_axis()`].
     pub const fn with_step_detector(mut self) -> Self {
         self.step_detector = true;
-        self
-    }
-
-    /// Enable pedometer step counter.
-    pub const fn with_step_counter(mut self) -> Self {
-        self.step_counter = true;
         self
     }
 
@@ -376,7 +427,18 @@ impl EulerAngles {
     }
 }
 
-/// DMP data read from FIFO
+/// DMP data parsed from a single FIFO packet.
+///
+/// Each call to `dmp_read_fifo()` returns at most one `DmpData` value, populated
+/// only with the fields that were present in that packet (all others are `None`).
+///
+/// # Why there is no `step_count` field
+///
+/// The cumulative step count is stored in DMP SRAM at address `PEDSTD_STEPCTR`,
+/// not in the FIFO. Including it here would require a separate I2C transaction
+/// on every FIFO read — even for packets that contain no step event. Instead,
+/// call `dmp_read_step_count()` explicitly after observing
+/// `pedometer_timestamp.is_some()`.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DmpData {
@@ -429,7 +491,17 @@ pub struct DmpData {
     /// Compass/Magnetometer accuracy status from DMP (0=unreliable, 3=high accuracy)
     pub compass_accuracy: Option<u16>,
 
-    /// Pedometer step detector timestamp/count
+    /// DMP internal cycle-counter value captured at the moment a step was detected.
+    ///
+    /// This is **not** a wall-clock timestamp and **not** the cumulative step count.
+    /// The value increments at the DMP clock rate (nominally the gyroscope output
+    /// rate) and is frozen at the step-detection moment. Use it to compute cadence
+    /// (time between consecutive steps) by subtracting two consecutive values.
+    ///
+    /// To get the cumulative step total, call `dmp_read_step_count()` separately
+    /// after observing a `Some` value here. The step count lives in DMP SRAM, not
+    /// in the FIFO, and cannot be embedded in `DmpData` without an extra I2C
+    /// transaction (see [`DmpData`] struct-level note below).
     pub pedometer_timestamp: Option<u32>,
 }
 

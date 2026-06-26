@@ -175,6 +175,8 @@ jobs:
             features: dmp
           - example: dmp_integration_6axis_async
             features: dmp
+          - example: dmp_pedometer_async
+            features: dmp
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
