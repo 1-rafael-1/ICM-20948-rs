@@ -93,7 +93,16 @@ async fn main(_spawner: Spawner) {
     loop {
         imu_int.wait_for_high().await;
 
-        let _status = imu.read_interrupt_status().await.unwrap();
+        let status = imu.read_interrupt_status().await.unwrap();
+
+        // A FIFO overflow invalidates any bytes already read into the reader.
+        // The status read clears the overflow latch, so act on it before the
+        // next packet read can splice two packets together.
+        if status.fifo_overflow {
+            reader.clear();
+            imu.reset_fifo().await.unwrap();
+            continue;
+        }
 
         if let Some(packet) = reader.read_packet_async(&mut imu).await.unwrap() {
             sample_count = sample_count.wrapping_add(1);

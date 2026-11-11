@@ -27,8 +27,8 @@ use embassy_rp::{
 };
 use embassy_time::{Delay, Duration, Instant};
 use icm20948::{
-    I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
     dmp::{DmpConfig, DmpFifoReader, DmpSampleRate},
+    I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
 };
 use panic_probe as _;
 
@@ -120,7 +120,16 @@ async fn main(_spawner: Spawner) {
     loop {
         imu_int.wait_for_high().await;
 
-        let _status = imu.read_interrupt_status().unwrap();
+        let status = imu.read_interrupt_status().unwrap();
+
+        // A FIFO overflow invalidates any bytes already read into the reader.
+        // The status read clears the overflow latch, so act on it before the
+        // next packet read can splice two packets together.
+        if status.fifo_overflow {
+            reader.clear();
+            imu.reset_fifo().unwrap();
+            continue;
+        }
 
         if let Some(packet) = reader.read_packet(&mut imu).unwrap() {
             sample_count = sample_count.wrapping_add(1);

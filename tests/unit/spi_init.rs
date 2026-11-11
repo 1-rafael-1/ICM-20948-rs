@@ -8,6 +8,9 @@ use crate::common::test_utils::MockDelay;
 use crate::common::{Operation, create_mock_driver};
 use icm20948::{Bank, Error};
 
+#[cfg(feature = "dmp")]
+use icm20948::dmp::{DmpConfig, DmpSampleRate};
+
 const WHO_AM_I: u8 = 0x00;
 const USER_CTRL: u8 = 0x03;
 const PWR_MGMT_1: u8 = 0x06;
@@ -119,5 +122,39 @@ fn legacy_init_times_out_when_spi_mode_is_required() {
     assert!(
         interface.spi_mode_violations() > 0,
         "legacy init should have attempted reads before restoring SPI mode"
+    );
+}
+
+/// `init_spi` resets the device, so the host-side DMP flags must be invalidated.
+/// Otherwise a recovered driver would accept configuration the reset erased.
+#[test]
+#[cfg(feature = "dmp")]
+fn init_spi_invalidates_dmp_state() {
+    let (mut driver, interface) = create_mock_driver();
+    interface.set_spi_only(true);
+
+    driver
+        .dmp_load_firmware()
+        .expect("firmware load should succeed");
+
+    let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
+    driver
+        .dmp_configure(&config)
+        .expect("DMP configuration should succeed before init_spi");
+
+    driver
+        .init_spi(&mut MockDelay)
+        .expect("init_spi should succeed over SPI");
+
+    assert!(
+        matches!(
+            driver.dmp_configure(&config),
+            Err(Error::DmpFirmwareNotLoaded)
+        ),
+        "init_spi must invalidate the loaded-firmware flag"
+    );
+    assert!(
+        matches!(driver.dmp_enable(true), Err(Error::DmpFirmwareNotLoaded)),
+        "init_spi must invalidate DMP state before the reset"
     );
 }

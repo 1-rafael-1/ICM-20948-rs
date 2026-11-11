@@ -311,6 +311,81 @@ fn fifo_overflow_is_reported_and_reset() {
 }
 
 #[test]
+fn overflow_reset_failure_keeps_resync_required_and_next_call_recovers() {
+    let (mut driver, interface) = create_mock_driver();
+    interface.set_register(Bank::Bank0, 0x1B, 0x01);
+
+    // Stale bytes that must never be framed after the failed reset.
+    let stale = quat9_packet(1);
+    interface.set_fifo_data(&stale);
+
+    let mut reader = DmpFifoReader::new();
+
+    // Fail the FIFO_RST write; the driver is already on Bank 0 after the
+    // overflow-status read, so the next write is the reset itself.
+    interface.fail_next_write();
+    let error = reader
+        .read_packet(&mut driver)
+        .expect_err("failed FIFO reset must surface as a bus error");
+    assert!(matches!(error, Error::Bus(_)));
+
+    // The reset never reached the device, so the stale bytes are still queued.
+    assert_eq!(interface.fifo_remaining(), stale.len());
+
+    // The next call must retry the reset instead of framing the stale bytes,
+    // then report that no packet is available.
+    assert!(
+        reader
+            .read_packet(&mut driver)
+            .expect("recovery read failed")
+            .is_none(),
+        "recovery must not return data from stale bytes"
+    );
+    assert_eq!(
+        interface.fifo_remaining(),
+        0,
+        "the retried reset must flush the device FIFO"
+    );
+}
+
+#[test]
+fn unsupported_secondary_header_bits_reject_packet_and_reset_fifo() {
+    let (mut driver, interface) = create_mock_driver();
+
+    let header = DmpPacketHeader::QUAT9_BIT | DmpPacketHeader::HEADER2_BIT;
+    let header2 = DmpPacketHeader2::ACTIVITY_RECOG_BIT;
+    let payload = vec![0u8; DmpPacketSize::QUAT9];
+    let packet = build_packet(header, Some(header2), &payload);
+    interface.set_fifo_data(&packet);
+
+    let mut reader = DmpFifoReader::new();
+    let error = reader
+        .read_packet(&mut driver)
+        .expect_err("unsupported secondary header bits must fail");
+
+    assert!(matches!(error, Error::MalformedDmpPacket));
+    assert!(reader.last_packet_info().is_none());
+    assert_eq!(
+        reader.last_rejected_header_bytes(),
+        &packet[..4],
+        "the rejected header block must be retained"
+    );
+    assert_eq!(
+        interface.fifo_remaining(),
+        0,
+        "the FIFO must be reset so the unaccounted payload cannot be reframed"
+    );
+
+    // Framing and resync state are clean: an empty FIFO yields no packet.
+    assert!(
+        reader
+            .read_packet(&mut driver)
+            .expect("empty read failed")
+            .is_none()
+    );
+}
+
+#[test]
 fn drain_all_callback_delivers_three_packets_then_stops() {
     let (mut driver, interface) = create_mock_driver();
     let mut stream = Vec::new();

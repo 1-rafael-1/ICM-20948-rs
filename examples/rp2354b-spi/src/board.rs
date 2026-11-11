@@ -68,15 +68,20 @@ pub enum BoardError {
     InitBus,
 }
 
-/// Build the SPI0 bus, probe the ICM-20948 and initialize it over SPI.
+/// Build the SPI0 bus and initialize the ICM-20948 over SPI.
 ///
 /// [`Icm20948Driver::init_spi`] resets the device, restores SPI mode before any
 /// read, wakes it and verifies `WHO_AM_I`, so no manual reset sequence is needed.
+/// The identity probe therefore happens inside `init_spi`, after SPI mode is
+/// restored. That matters when the MCU restarts after the IMU's soft reset but
+/// before `I2C_IF_DIS` is restored: a probe issued before `init_spi` would fail
+/// on the still-disabled SPI interface, while `init_spi` can recover.
 ///
 /// # Errors
 ///
-/// Returns [`BoardError::DeviceProbe`] if the `WHO_AM_I` probe fails and
-/// [`BoardError::InitBus`] if the SPI reset/wake sequence fails.
+/// Returns [`BoardError::DeviceProbe`] if the `WHO_AM_I` probe inside
+/// `init_spi` fails and [`BoardError::InitBus`] if the SPI reset/wake sequence
+/// fails.
 pub async fn init_imu<'d>(p: &'d mut Peripherals, spi_hz: u32) -> Result<BoardImu<'d>, BoardError> {
     let mut spi_config = SpiConfig::default();
     spi_config.frequency = spi_hz;
@@ -105,15 +110,17 @@ pub async fn init_imu<'d>(p: &'d mut Peripherals, spi_hz: u32) -> Result<BoardIm
         Err(infallible) => match infallible {},
     };
 
-    let mut imu = Icm20948Driver::try_new(SpiInterface::new(spi_device))
-        .await
-        .map_err(|_| BoardError::DeviceProbe)?;
+    // Construct without a bus probe: the IMU may still have SPI disabled after
+    // an MCU restart, and `init_spi` restores SPI mode before verifying
+    // `WHO_AM_I`.
+    let mut imu = Icm20948Driver::new(SpiInterface::new(spi_device));
 
     // Reset, restore SPI mode before any read, wake and verify `WHO_AM_I`.
     let mut delay = Delay;
-    imu.init_spi(&mut delay)
-        .await
-        .map_err(|_| BoardError::InitBus)?;
+    imu.init_spi(&mut delay).await.map_err(|e| match e {
+        icm20948::Error::InvalidDevice(_) => BoardError::DeviceProbe,
+        _ => BoardError::InitBus,
+    })?;
 
     Ok(imu)
 }

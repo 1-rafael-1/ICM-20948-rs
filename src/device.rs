@@ -60,6 +60,16 @@ macro_rules! maybe_delay {
 /// whether device I/O and delays are awaited. Every step below is defined once.
 macro_rules! init_spi_body {
     ($driver:ident, $delay:ident, $mode:ident) => {{
+        // The reset below erases the device-side configuration, so invalidate
+        // the host-side flags before issuing it. If a later bring-up step
+        // fails, they must remain invalid rather than claim stale state.
+        $driver.mag_initialized = false;
+        #[cfg(feature = "dmp")]
+        {
+            $driver.dmp_firmware_loaded = false;
+            $driver.dmp_configured = false;
+        }
+
         // Force a known bank baseline with a write. A read is not valid until
         // SPI mode is restored after the reset.
         device_write!(

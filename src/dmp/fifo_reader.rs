@@ -46,13 +46,27 @@ macro_rules! maybe_await {
 /// whether device I/O is awaited. Every framing rule below is defined once.
 macro_rules! read_packet_impl {
     ($reader:ident, $driver:ident, $mode:ident) => {{
-        use crate::dmp::config::DmpPacketHeader;
+        use crate::dmp::config::{DmpPacketHeader, DmpPacketHeader2};
         use crate::dmp::parser::DmpParser;
+
+        // A previous burst failed or was cancelled, so the device FIFO may be
+        // positioned mid-packet. Resync before reading anything else; while the
+        // flag is set no stale bytes may be framed.
+        if $reader.state.resync_required {
+            maybe_await!($driver.fifo_reset(), $mode)?;
+            $reader.state.reset_framing();
+            $reader.state.resync_required = false;
+            return Ok(None);
+        }
 
         // A FIFO overflow invalidates any retained bytes.
         if maybe_await!($driver.fifo_overflow_status(), $mode)?.any_overflow() {
+            // Keep the resync flag set until the device reset actually
+            // succeeds; otherwise the next call retries it.
+            $reader.state.resync_required = true;
             $reader.state.clear();
             maybe_await!($driver.fifo_reset(), $mode)?;
+            $reader.state.resync_required = false;
             return Err(Error::FifoOverflow);
         }
 
@@ -70,11 +84,18 @@ macro_rules! read_packet_impl {
                     $reader.state.last_info = None;
                 }
                 let end = start + want;
-                maybe_await!(
+                // A burst may consume bytes even when it fails, so the retained
+                // bytes and the device FIFO position can disagree afterwards.
+                $reader.state.resync_required = true;
+                if let Err(error) = maybe_await!(
                     $driver.read_fifo_raw(&mut $reader.state.buffer[start..end]),
                     $mode
-                )?;
+                ) {
+                    $reader.state.reset_framing();
+                    return Err(error);
+                }
                 $reader.state.len = end;
+                $reader.state.resync_required = false;
             }
             if $reader.state.len < HEADER_BLOCK {
                 return Ok(None);
@@ -86,7 +107,9 @@ macro_rules! read_packet_impl {
         if !parser.validate_header(header) {
             $reader.state.reject_header();
             $reader.state.reset_framing();
+            $reader.state.resync_required = true;
             maybe_await!($driver.fifo_reset(), $mode)?;
+            $reader.state.resync_required = false;
             return Err(Error::MalformedDmpPacket);
         }
 
@@ -101,11 +124,28 @@ macro_rules! read_packet_impl {
             None
         };
 
+        // Reject secondary-header bits whose payloads the parser does not
+        // account for: returning such a packet early would leave its payload
+        // bytes in the FIFO to be mistaken for the next header.
+        let unsupported_header2_bits = DmpPacketHeader2::ACTIVITY_RECOG_BIT
+            | DmpPacketHeader2::PICKUP_BIT
+            | DmpPacketHeader2::FSYNC_BIT;
+        if header2.is_some_and(|h2| h2 & unsupported_header2_bits != 0) {
+            $reader.state.reject_header();
+            $reader.state.reset_framing();
+            $reader.state.resync_required = true;
+            maybe_await!($driver.fifo_reset(), $mode)?;
+            $reader.state.resync_required = false;
+            return Err(Error::MalformedDmpPacket);
+        }
+
         let expected = DmpParser::calculate_packet_size(header, header2);
         if expected > DmpPacketSize::MAX_PACKET_SIZE {
             $reader.state.reject_header();
             $reader.state.reset_framing();
+            $reader.state.resync_required = true;
             maybe_await!($driver.fifo_reset(), $mode)?;
+            $reader.state.resync_required = false;
             return Err(Error::MalformedDmpPacket);
         }
 
@@ -116,11 +156,16 @@ macro_rules! read_packet_impl {
             if want > 0 {
                 let start = $reader.state.len;
                 let end = start + want;
-                maybe_await!(
+                $reader.state.resync_required = true;
+                if let Err(error) = maybe_await!(
                     $driver.read_fifo_raw(&mut $reader.state.buffer[start..end]),
                     $mode
-                )?;
+                ) {
+                    $reader.state.reset_framing();
+                    return Err(error);
+                }
                 $reader.state.len = end;
+                $reader.state.resync_required = false;
             }
             if $reader.state.len < expected {
                 return Ok(None);
@@ -147,7 +192,9 @@ macro_rules! read_packet_impl {
             None => {
                 $reader.state.reject_header();
                 $reader.state.reset_framing();
+                $reader.state.resync_required = true;
                 maybe_await!($driver.fifo_reset(), $mode)?;
+                $reader.state.resync_required = false;
                 Err(Error::MalformedDmpPacket)
             }
         }
@@ -179,6 +226,9 @@ struct DmpFifoState {
     last_info: Option<DmpPacketInfo>,
     rejected: [u8; REJECTED_HEADER_MAX],
     rejected_len: usize,
+    /// A FIFO burst failed or was cancelled, so the device FIFO may be
+    /// mid-packet. The next read resyncs the device FIFO before framing.
+    resync_required: bool,
 }
 
 impl DmpFifoState {
@@ -190,11 +240,12 @@ impl DmpFifoState {
             last_info: None,
             rejected: [0u8; REJECTED_HEADER_MAX],
             rejected_len: 0,
+            resync_required: false,
         }
     }
 
     /// Reset packet framing (and diagnostics) without touching the rejected
-    /// header bytes.
+    /// header bytes or the pending-resync flag.
     const fn reset_framing(&mut self) {
         self.len = 0;
         self.last_len = 0;
@@ -202,6 +253,10 @@ impl DmpFifoState {
     }
 
     /// Reset all host-side state, including the rejected header bytes.
+    ///
+    /// This is host-only and deliberately leaves `resync_required` set: a prior
+    /// failed device I/O still requires a device FIFO resync before the next
+    /// framing attempt.
     const fn clear(&mut self) {
         self.reset_framing();
         self.rejected_len = 0;
@@ -236,6 +291,10 @@ impl DmpFifoReader {
     ///
     /// This performs no device I/O; it only clears host-side state. It also
     /// clears [`last_rejected_header_bytes`](Self::last_rejected_header_bytes).
+    ///
+    /// If a previous read failed after its FIFO burst may have consumed bytes,
+    /// the next `read_packet` / `read_packet_async` still resyncs the device
+    /// FIFO before framing: this method does not clear the pending-resync flag.
     pub const fn clear(&mut self) {
         self.state.clear();
     }
