@@ -3804,9 +3804,9 @@ where
         }
 
         let calibration = crate::sensors::MagCalibration {
-            offset_x: (max_x + min_x) * 0.5,
-            offset_y: (max_y + min_y) * 0.5,
-            offset_z: (max_z + min_z) * 0.5,
+            offset_x: f32::midpoint(max_x, min_x),
+            offset_y: f32::midpoint(max_y, min_y),
+            offset_z: f32::midpoint(max_z, min_z),
             scale_x: 1.0,
             scale_y: 1.0,
             scale_z: 1.0,
