@@ -13,7 +13,10 @@ use embassy_stm32::{
 };
 use embassy_time::{Delay, Instant};
 use embedded_hal_bus::spi::ExclusiveDevice;
-use icm20948::{Icm20948Driver, InterruptConfig, InterruptPinConfig, SpiInterface, dmp::DmpConfig};
+use icm20948::{
+    Icm20948Driver, InterruptConfig, InterruptPinConfig, SpiInterface,
+    dmp::{DmpConfig, DmpFifoReader, DmpSampleRate},
+};
 
 bind_interrupts!(struct SpiIrqs {
     DMA1_CHANNEL5 => embassy_stm32::dma::InterruptHandler<embassy_stm32::peripherals::DMA1_CH5>;
@@ -43,9 +46,7 @@ async fn main(_spawner: Spawner) {
         .unwrap();
 
     let mut delay = Delay;
-    imu.init(&mut delay).await.unwrap();
-
-    imu.enable_spi_mode().await.unwrap();
+    imu.init_spi(&mut delay).await.unwrap();
 
     let int_pin_cfg = InterruptPinConfig {
         active_low: false,
@@ -63,12 +64,12 @@ async fn main(_spawner: Spawner) {
     imu.dmp_init(&mut delay).await.unwrap();
     imu.dmp_init_magnetometer(&mut delay).await.unwrap();
 
-    let dmp_sample_rate_hz: u16 = 225;
+    let dmp_sample_rate = DmpSampleRate::Hz225;
 
     let dmp_config = DmpConfig::nine_axis()
         .with_host_calibrated_accel()
         .with_raw_accel()
-        .with_sample_rate(dmp_sample_rate_hz);
+        .with_sample_rate(dmp_sample_rate);
 
     imu.dmp_configure(&dmp_config).await.unwrap();
 
@@ -85,14 +86,25 @@ async fn main(_spawner: Spawner) {
     let mut pos_x = 0.0f32;
     let mut pos_y = 0.0f32;
 
-    let dt = 1.0 / dmp_sample_rate_hz as f32;
+    let dt = 1.0 / dmp_sample_rate.actual_output_hz();
+
+    let mut reader = DmpFifoReader::new();
 
     loop {
         imu_int.wait_for_high().await;
 
-        let _status = imu.read_interrupt_status().await.unwrap();
+        let status = imu.read_interrupt_status().await.unwrap();
 
-        if let Some(packet) = imu.dmp_read_fifo().await.unwrap() {
+        // A FIFO overflow invalidates any bytes already read into the reader.
+        // The status read clears the overflow latch, so act on it before the
+        // next packet read can splice two packets together.
+        if status.fifo_overflow {
+            reader.clear();
+            imu.reset_fifo().await.unwrap();
+            continue;
+        }
+
+        if let Some(packet) = reader.read_packet_async(&mut imu).await.unwrap() {
             sample_count = sample_count.wrapping_add(1);
 
             let quat_opt = packet.quaternion_9axis.or(packet.quaternion_6axis);

@@ -51,7 +51,21 @@ In case YOU find any issues, please consider submitting a PR or opening an issue
 - ✅ **Optional defmt support** - Logging support for embedded debugging
 
 ### Known Limitations
-- ⚠️ **DMP (Digital Motion Processor)** - API not yet stable. Use software sensor fusion instead.
+- ⚠️ **DMP (Digital Motion Processor)** - API not yet stable. The basic 6-axis and 9-axis packet paths are validated in HIL on the RP2354B; not all DMP capabilities are supported.
+
+The DMP FIFO is read exclusively through the caller-owned `DmpFifoReader`
+(`read_packet`, `read_packet_async`, and the `read_packets` helpers). The reader
+retains a packet that is split across FIFO reads, so it is the only supported
+packet-framing path. Configure rates with `DmpSampleRate` and use
+`actual_output_hz()` for the real output rate (`Hz56`/`Hz112`/`Hz225` produce
+56.25/112.5/225 Hz). The DMP ODR register is written to its maximum (0), so the
+packet rate equals the selected sensor-rate bucket. A consumer that polls slower
+than that rate must drain all packets with `read_packets` or poll at the selected
+rate or faster, otherwise the FIFO backs up. The former
+`dmp_read_fifo` and `dmp_read_quaternion` driver methods were removed because
+framing without retained state could desynchronise the FIFO stream; read a packet
+with the reader and use `DmpData::quaternion_9axis` or `DmpData::quaternion_6axis`
+instead.
 
 ## Usage
 
@@ -59,7 +73,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-icm20948-rs = "0.2"
+icm20948-rs = "0.3"
 ```
 
 The driver includes blocking I2C/SPI support by default. See the [Features](#features) section below for optional features like `async`, `defmt`, and `dmp`.
@@ -68,7 +82,7 @@ The driver includes blocking I2C/SPI support by default. See the [Features](#fea
 
 - `async` - Enable `AsyncRegisterInterface` trait implementations for embedded-hal-async 1.0
 - `defmt` - Enable defmt formatting support for types
-- `dmp` - Enable Digital Motion Processor (DMP) firmware loading (**not stable yet!**)
+- `dmp` - Enable Digital Motion Processor (DMP) firmware loading and the `DmpFifoReader` FIFO framing API (**not stable yet!**)
 
 **Note:** The crate uses `embedded-hal` for blocking I2C/SPI traits and core functionality like `DelayNs` used by magnetometer operations. The `async` feature is additive and provides async trait implementations alongside the blocking ones.
 
@@ -155,26 +169,32 @@ For raw 16-bit values, use the `_raw()` variants like `read_accel_raw()` and `re
 - Max clock: 7 MHz
 - Bit order: MSB first
 
+**Initialization:** Use `init_spi()` instead of `init()`.
+The ICM-20948 soft reset clears `USER_CTRL.I2C_IF_DIS`, and SPI reads are not
+served until it is written again. `init_spi` restores it with write-only
+accesses before any read, so the legacy `init()`/`reinit()` polling path is for
+I2C only.
+
 ## Testing
 
-The driver includes unit tests, async tests, and integration tests with mock hardware interfaces.
+The driver includes unit tests, async tests, and integration tests with mock hardware interfaces. DMP FIFO tests drive `DmpFifoReader` through the same mock interfaces, covering complete, split, empty, malformed, and overflow packets with exact byte accounting.
 
 ```bash
-# Run library unit tests
-cargo test --lib
+# Run library unit tests, including the DMP reader tests
+cargo test --lib --features dmp
 
-# Run async tests
-cargo test --test async_tests --features std,async
+# Run async tests, including the async DMP reader path
+cargo test --test async_tests --features std,async,dmp
 
 # Run FIFO efficiency tests
 cargo test --test fifo_efficiency_test --features std
 ```
 
 **Continuous Integration:** See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the CI test suite, which includes:
-- Library unit tests (sensors, FIFO, interrupts, power management, self-test)
-- Async tests
+- Library unit tests (sensors, FIFO, interrupts, power management, self-test, DMP reader)
+- Async tests (including `DmpFifoReader::read_packet_async`)
 - FIFO efficiency tests
-- Example builds for both blocking and async variants (RP2350)
+- Example builds for the blocking and async variants (RP2350, STM32L431, RP2354B SPI)
 - Format and clippy checks
 
 All tests run automatically on every push and pull request.
@@ -205,8 +225,9 @@ All tests run automatically on every push and pull request.
 ### Known Non-Functional Features ⚠️
 **Digital Motion Processor (DMP):**
 - Firmware loading implementation exists (behind `dmp` feature flag)
-- **Status:** Awaiting data verification; API not yet stable. Basic DMP is working but not all capabilities supported yet
-- **Recommendation:** Use software sensor fusion (see `ahrs_euler.rs` example) instead until stabilized
+- DMP FIFO output is framed by the caller-owned `DmpFifoReader`; the old `dmp_read_fifo` and `dmp_read_quaternion` methods have been removed
+- **Status:** Basic 6-axis and 9-axis DMP output validated in HIL on the RP2354B (reader framing, 112.5 Hz packet rate, fresh DMP raw compass, yaw hold). API not yet stable; not all capabilities are supported.
+- **Recommendation:** Use with care until the API stabilizes; software sensor fusion (see `ahrs_euler.rs`) remains a good alternative.
 
 ## Documentation
 

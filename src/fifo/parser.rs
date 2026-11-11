@@ -98,7 +98,7 @@ impl FifoParser {
     ///
     /// # Errors
     /// Returns `InvalidConfig` if data length is incorrect
-    fn parse_record(&self, data: &[u8]) -> Result<FifoRecord, Error<()>> {
+    const fn parse_record(&self, data: &[u8]) -> Result<FifoRecord, Error<()>> {
         if data.len() != self.bytes_per_record {
             return Err(Error::InvalidConfig);
         }

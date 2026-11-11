@@ -48,8 +48,7 @@ async fn main(_spawner: Spawner) {
         .unwrap();
     let mut delay = Delay;
 
-    imu.init(&mut delay).await.unwrap();
-    imu.enable_spi_mode().await.unwrap();
+    imu.init_spi(&mut delay).await.unwrap();
     Timer::after_millis(50).await;
 
     // 1. Configure sensors (100Hz)

@@ -25,24 +25,31 @@
 //! ## Usage Example
 //!
 //! ```ignore
-//! # use icm20948::{Icm20948Driver, dmp::DmpConfig};
+//! # use icm20948::{Icm20948Driver, dmp::{DmpConfig, DmpFifoReader, DmpSampleRate}};
 //! # let mut driver: Icm20948Driver<_> = todo!();
 //! // Initialize and load DMP firmware (must be done after device init)
 //! driver.dmp_init()?;
 //!
-//! // Configure which DMP features to enable
+//! // Configure 9-axis fusion and select a validated DMP output rate.
+//! // `Hz112` produces an actual DMP output rate of 112.5 Hz.
 //! let config = DmpConfig::nine_axis()
 //!     .with_calibrated_gyro()
-//!     .with_sample_rate(100);
+//!     .with_sample_rate(DmpSampleRate::Hz112);
+//!
+//! // A requested rate can be snapped to the nearest validated rate instead:
+//! let snapped = DmpConfig::nine_axis().with_nearest_sample_rate(100);
+//! assert_eq!(snapped.actual_output_hz(), 112.5);
 //!
 //! driver.dmp_configure(&config)?;
 //!
 //! // Enable DMP
 //! driver.dmp_enable(true)?;
 //!
-//! // Read DMP data from FIFO
+//! // Read DMP data from FIFO. The caller owns the reader, so partial packet
+//! // bytes are retained between polls without a per-driver buffer.
+//! let mut reader = DmpFifoReader::new();
 //! loop {
-//!     if let Some(data) = driver.dmp_read_fifo()? {
+//!     if let Some(data) = reader.read_packet(&mut driver)? {
 //!         if let Some(quat) = data.quaternion_9axis {
 //!             println!("Quaternion: w={}, x={}, y={}, z={}",
 //!                      quat.w, quat.x, quat.y, quat.z);
@@ -51,6 +58,14 @@
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! ## Reading DMP output
+//!
+//! [`DmpFifoReader`] is the only DMP FIFO API. The former `dmp_read_fifo` and
+//! `dmp_read_quaternion` driver methods were removed because framing packets
+//! without retained state can desynchronise the FIFO stream when a packet is
+//! split across reads. To read quaternions, read a packet with the reader and
+//! use [`DmpData::quaternion_9axis`] or [`DmpData::quaternion_6axis`].
 //!
 //! ## Power Consumption
 //!
@@ -64,19 +79,23 @@
 //! module for full licensing details and attribution.
 
 pub mod config;
+pub mod fifo_reader;
 pub mod firmware;
 pub mod loader;
+pub mod mag_snapshot;
 pub mod parser;
 
 // Re-export common items
 pub use config::{
-    ArbitrarySampleRate, ConfigSequence, DmpFeatures, DmpMemoryAddresses, DmpPacketHeader,
-    DmpPacketHeader2, DmpSampleRate, calculate_gyro_sf,
+    ConfigSequence, DmpFeatures, DmpMemoryAddresses, DmpPacketHeader, DmpPacketHeader2,
+    DmpSampleRate, calculate_gyro_sf,
 };
+pub use fifo_reader::{DmpFifoReader, DmpPacketInfo};
 pub use firmware::{
     DMP_FIRMWARE, DMP_MEM_BANK_SEL, DMP_MEM_R_W, DMP_MEM_START_ADDR, DMP_START_ADDRESS,
 };
 pub use loader::{DMP_LOAD_DELAY_US, DmpInitializer, FirmwareLoader};
+pub use mag_snapshot::DmpMagConfigSnapshot;
 pub use parser::DmpParser;
 
 /// The quaternion fusion algorithm the DMP should run.
@@ -127,8 +146,8 @@ pub struct DmpConfig {
     /// Enable raw gyroscope output from DMP
     pub raw_gyro: bool,
 
-    /// Enable raw magnetometer output from DMP
-    pub raw_mag: bool,
+    /// Enable DMP raw compass output
+    pub dmp_compass: bool,
 
     /// Enable pedometer step detector (triggers an event on step)
     pub step_detector: bool,
@@ -147,14 +166,18 @@ pub struct DmpConfig {
 
     // /// Enable activity classification (not implemented yet)
     // pub activity_classification: bool,
-    /// DMP sample rate (Hz)
-    /// Valid range depends on sensor configuration, typically 1-225 Hz
-    pub sample_rate: u16,
+    /// Validated DMP output sample rate.
+    ///
+    /// The DMP can only produce 56.25, 112.5 or 225 Hz. Use
+    /// [`with_sample_rate`](Self::with_sample_rate) to select one directly, or
+    /// [`with_nearest_sample_rate`](Self::with_nearest_sample_rate) to snap a
+    /// requested rate to the closest validated value.
+    pub sample_rate: DmpSampleRate,
 }
 
 impl Default for DmpConfig {
     fn default() -> Self {
-        // 9-axis quaternion at 100 Hz is the most common use case
+        // 9-axis quaternion at the validated 112 Hz rate (actual 112.5 Hz).
         Self::nine_axis()
     }
 }
@@ -169,10 +192,10 @@ impl DmpConfig {
             calibrated_mag: false,
             raw_accel: false,
             raw_gyro: false,
-            raw_mag: false,
+            dmp_compass: false,
             step_detector: false,
             step_counter: false,
-            sample_rate: 100,
+            sample_rate: DmpSampleRate::Hz112,
         }
     }
 
@@ -246,9 +269,9 @@ impl DmpConfig {
         self
     }
 
-    /// Enable raw magnetometer output from DMP.
-    pub const fn with_raw_mag(mut self) -> Self {
-        self.raw_mag = true;
+    /// Enable DMP raw compass output.
+    pub const fn with_dmp_compass(mut self) -> Self {
+        self.dmp_compass = true;
         self
     }
 
@@ -264,20 +287,44 @@ impl DmpConfig {
         self
     }
 
-    /// Set the DMP output sample rate in Hz.
+    /// Set the DMP output sample rate to a validated rate.
     ///
-    /// Valid range is 1–225 Hz. Values of 0 are clamped to 1; values above 225 are
-    /// clamped to 225. This ensures that both the sample-rate divider and the
-    /// calibration-parameter lookup always see the same effective rate.
-    pub const fn with_sample_rate(mut self, rate: u16) -> Self {
-        self.sample_rate = if rate == 0 {
-            1
-        } else if rate > 225 {
-            225
-        } else {
-            rate
-        };
+    /// The DMP can only produce 56.25, 112.5 or 225 Hz. Selecting a rate also
+    /// fixes the calibration parameters used by the configuration sequence.
+    /// Use [`with_nearest_sample_rate`](Self::with_nearest_sample_rate) to snap
+    /// a requested Hz value to the closest validated rate explicitly.
+    pub const fn with_sample_rate(mut self, rate: DmpSampleRate) -> Self {
+        self.sample_rate = rate;
         self
+    }
+
+    /// Snap a requested rate in Hz to the nearest validated DMP sample rate.
+    ///
+    /// The thresholds are: up to 84 Hz -> [`DmpSampleRate::Hz56`], up to
+    /// 168 Hz -> [`DmpSampleRate::Hz112`], otherwise [`DmpSampleRate::Hz225`].
+    /// For example, requesting 100 Hz stores `Hz112`, whose actual DMP output
+    /// rate is 112.5 Hz.
+    pub const fn with_nearest_sample_rate(mut self, hz: u16) -> Self {
+        self.sample_rate = DmpSampleRate::from_hz(hz);
+        self
+    }
+
+    /// Get the value written to the DMP ODR registers for the configured rate.
+    ///
+    /// It is `0` (maximum) for every validated rate: the sensor ODR selected
+    /// from the same rate already sets the packet rate, so the DMP does not
+    /// divide it again. It is distinct from the hardware gyro sample rate
+    /// divider.
+    pub const fn dmp_output_divider(&self) -> u8 {
+        self.sample_rate.dmp_output_divider()
+    }
+
+    /// Get the actual DMP output rate in Hz for the configured rate.
+    ///
+    /// The actual rate may differ from the nominal value (for example, the
+    /// nominal 56 Hz rate actually outputs 56.25 Hz).
+    pub const fn actual_output_hz(&self) -> f32 {
+        self.sample_rate.actual_output_hz()
     }
 }
 
@@ -413,8 +460,9 @@ pub struct DmpData {
     /// Raw gyroscope data from DMP
     pub raw_gyro: Option<(i16, i16, i16)>,
 
-    /// Raw magnetometer data from DMP
-    pub raw_mag: Option<(i16, i16, i16)>,
+    /// DMP raw compass: the 16-bit compass field the DMP includes in a packet
+    /// (not proof of freshness).
+    pub dmp_compass: Option<(i16, i16, i16)>,
 
     /// Gyroscope bias data from DMP (dynamically calculated zero-offset)
     /// Only available when `raw_gyro` output is enabled.
@@ -441,7 +489,8 @@ mod tests {
     fn test_dmp_config_default() {
         let config = DmpConfig::default();
         assert_eq!(config.fusion_mode, DmpFusionMode::NineAxis);
-        assert_eq!(config.sample_rate, 100);
+        assert_eq!(config.sample_rate, DmpSampleRate::Hz112);
+        assert_eq!(config.actual_output_hz(), 112.5);
     }
 
     #[test]
@@ -449,12 +498,12 @@ mod tests {
         let config = DmpConfig::six_axis()
             .with_host_calibrated_accel()
             .with_calibrated_gyro()
-            .with_sample_rate(200);
+            .with_sample_rate(DmpSampleRate::Hz225);
 
         assert_eq!(config.fusion_mode, DmpFusionMode::SixAxis);
         assert!(config.host_calibrated_accel);
         assert!(config.calibrated_gyro);
-        assert_eq!(config.sample_rate, 200);
+        assert_eq!(config.sample_rate, DmpSampleRate::Hz225);
     }
 
     #[test]

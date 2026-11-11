@@ -270,6 +270,58 @@ jobs:
             cargo build --bin ${{ matrix.example }} --release
           fi
 
+  # Cross-compile async SPI examples for the custom RP2354B board
+  examples-rp2354b-spi:
+    name: Build RP2354B SPI Examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - example: direct_mag_spi
+          - example: dmp_nine_axis_spi
+            features: dmp
+          - example: dmp_nine_axis_spi
+            features: dmp mag-reinit-diagnostic
+          - example: dmp_six_axis_spi
+            features: dmp
+          - example: dmp_fifo_dump_spi
+            features: dmp
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv8m.main-none-eabihf
+
+      - name: Install flip-link
+        run: cargo install flip-link
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/rp2354b-spi
+          cache-on-failure: true
+
+      - name: Build RP2354B SPI example (debug)
+        run: |
+          cd examples/rp2354b-spi
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}"
+          else
+            cargo build --bin ${{ matrix.example }}
+          fi
+
+      - name: Build RP2354B SPI example (release)
+        run: |
+          cd examples/rp2354b-spi
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --bin ${{ matrix.example }} --features "${{ matrix.features }}" --release
+          else
+            cargo build --bin ${{ matrix.example }} --release
+          fi
+
   # Cross-compile async examples for STM32L431
   examples-stm32l431-async:
     name: Build STM32L431 Async Examples
@@ -318,6 +370,7 @@ jobs:
       - docs
       - examples-rp2350-async
       - examples-rp2350-blocking
+      - examples-rp2354b-spi
       - examples-stm32l431-async
     runs-on: ubuntu-latest
     steps:

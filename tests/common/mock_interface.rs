@@ -5,7 +5,7 @@ use device_driver::AsyncRegisterInterface;
 use device_driver::RegisterInterface;
 use icm20948::Bank;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 /// Records operations performed on the mock interface
@@ -64,6 +64,23 @@ struct MockState {
 
     /// Simulated magnetometer (AK09916) registers
     mag_registers: HashMap<u8, u8>,
+
+    /// Simulated DMP FIFO byte stream
+    fifo_data: VecDeque<u8>,
+
+    /// Total bytes popped from the FIFO stream since the last `set_fifo_data`
+    fifo_consumed: usize,
+
+    /// When true, register reads fail unless `i2c_if_dis` is set, modelling an
+    /// SPI-only device that needs `USER_CTRL.I2C_IF_DIS` restored after a reset.
+    spi_only: bool,
+
+    /// Simulated `USER_CTRL.I2C_IF_DIS` bit. Defaults to true: a device that is
+    /// already in SPI mode.
+    i2c_if_dis: bool,
+
+    /// Number of register reads rejected because SPI mode was not restored.
+    spi_mode_violations: usize,
 }
 
 impl MockState {
@@ -80,6 +97,11 @@ impl MockState {
             gyro_sequence: Vec::new(),
             gyro_sequence_idx: 0,
             mag_registers: HashMap::new(),
+            fifo_data: VecDeque::new(),
+            fifo_consumed: 0,
+            spi_only: false,
+            i2c_if_dis: true,
+            spi_mode_violations: 0,
         };
 
         // Set default WHO_AM_I value (0xEA)
@@ -167,6 +189,18 @@ impl MockState {
         self.registers.insert((Bank::Bank0, 0x41), z_h); // EXT_SLV_SENS_DATA_06 (HZH)
         self.registers.insert((Bank::Bank0, 0x42), 0x00); // EXT_SLV_SENS_DATA_07 (dummy byte at reg 0x17)
         self.registers.insert((Bank::Bank0, 0x43), st2); // EXT_SLV_SENS_DATA_08 (ST2)
+    }
+
+    /// Replace the simulated FIFO stream and reset the byte accounting
+    fn set_fifo_data(&mut self, data: &[u8]) {
+        self.fifo_data.clear();
+        self.fifo_data.extend(data.iter().copied());
+        self.fifo_consumed = 0;
+    }
+
+    /// Append bytes to the simulated FIFO stream
+    fn append_fifo_data(&mut self, data: &[u8]) {
+        self.fifo_data.extend(data.iter().copied());
     }
 
     /// Simulate I2C master slave 4 transaction
@@ -339,6 +373,26 @@ impl MockInterface {
         // This method is kept for backward compatibility but does nothing
     }
 
+    /// Replace the simulated FIFO byte stream and reset byte accounting
+    pub fn set_fifo_data(&self, data: &[u8]) {
+        self.state.borrow_mut().set_fifo_data(data);
+    }
+
+    /// Append bytes to the simulated FIFO byte stream
+    pub fn append_fifo_data(&self, data: &[u8]) {
+        self.state.borrow_mut().append_fifo_data(data);
+    }
+
+    /// Number of bytes still available in the simulated FIFO
+    pub fn fifo_remaining(&self) -> usize {
+        self.state.borrow().fifo_data.len()
+    }
+
+    /// Number of bytes consumed from the simulated FIFO since `set_fifo_data`
+    pub fn fifo_bytes_consumed(&self) -> usize {
+        self.state.borrow().fifo_consumed
+    }
+
     /// Inject a read failure on the next read operation
     pub fn fail_next_read(&self) {
         self.state.borrow_mut().fail_next_read = true;
@@ -380,6 +434,25 @@ impl MockInterface {
     pub fn verify_register(&self, bank: Bank, address: u8, expected: u8) -> bool {
         self.get_register(bank, address) == expected
     }
+
+    /// Model an SPI-only device: reads fail until `USER_CTRL.I2C_IF_DIS` is
+    /// written after a reset.
+    #[allow(dead_code)]
+    pub fn set_spi_only(&self, spi_only: bool) {
+        self.state.borrow_mut().spi_only = spi_only;
+    }
+
+    /// Number of reads rejected because SPI mode was not restored.
+    #[allow(dead_code)]
+    pub fn spi_mode_violations(&self) -> usize {
+        self.state.borrow().spi_mode_violations
+    }
+
+    /// Current simulated `USER_CTRL.I2C_IF_DIS` bit.
+    #[allow(dead_code)]
+    pub fn i2c_if_dis(&self) -> bool {
+        self.state.borrow().i2c_if_dis
+    }
 }
 
 /// Mock error type
@@ -403,6 +476,13 @@ impl RegisterInterface for MockInterface {
     ) -> Result<(), Self::Error> {
         let mut state = self.state.borrow_mut();
 
+        // Model SPI mode enforcement: reads are rejected until the post-reset
+        // USER_CTRL.I2C_IF_DIS write restores SPI mode.
+        if state.spi_only && !state.i2c_if_dis {
+            state.spi_mode_violations += 1;
+            return Err(MockError::Communication);
+        }
+
         // Check for injected failure
         if state.fail_next_read {
             state.fail_next_read = false;
@@ -418,6 +498,48 @@ impl RegisterInterface for MockInterface {
                 address,
                 value: read_data[0],
             });
+            return Ok(());
+        }
+
+        // Simulate the DMP FIFO byte stream (Bank 0)
+        if state.current_bank == Bank::Bank0 && address == 0x70 && !read_data.is_empty() {
+            let count = state.fifo_data.len() as u16;
+            let [high, low] = count.to_be_bytes();
+            read_data[0] = high;
+            state.operations.push(Operation::ReadRegister {
+                bank: Bank::Bank0,
+                address: 0x70,
+                value: high,
+            });
+            for (i, byte) in read_data.iter_mut().enumerate().skip(1) {
+                let reg_addr = 0x70u8.wrapping_add(i as u8);
+                *byte = if i == 1 { low } else { 0 };
+                state.operations.push(Operation::ReadRegister {
+                    bank: Bank::Bank0,
+                    address: reg_addr,
+                    value: *byte,
+                });
+            }
+            return Ok(());
+        }
+
+        // FIFO_R_W: pop up to `read_data.len()` bytes, zero-filling the rest.
+        // Multi-byte burst reads at 0x72 are required by `read_fifo_raw`.
+        if state.current_bank == Bank::Bank0 && address == 0x72 {
+            for byte in &mut *read_data {
+                let value = if let Some(value) = state.fifo_data.pop_front() {
+                    state.fifo_consumed += 1;
+                    value
+                } else {
+                    0
+                };
+                *byte = value;
+                state.operations.push(Operation::ReadRegister {
+                    bank: Bank::Bank0,
+                    address: 0x72,
+                    value,
+                });
+            }
             return Ok(());
         }
 
@@ -499,6 +621,22 @@ impl RegisterInterface for MockInterface {
             return Ok(());
         }
 
+        // FIFO_RST: a non-zero value clears the simulated FIFO stream
+        if state.current_bank == Bank::Bank0 && address == 0x68 {
+            let clear = write_data.first().is_some_and(|&value| value != 0);
+            if clear {
+                state.fifo_data.clear();
+            }
+            for (i, &byte) in write_data.iter().enumerate() {
+                state.operations.push(Operation::WriteRegister {
+                    bank: Bank::Bank0,
+                    address: 0x68u8.wrapping_add(i as u8),
+                    value: byte,
+                });
+            }
+            return Ok(());
+        }
+
         // Write to registers
         for (i, &byte) in write_data.iter().enumerate() {
             let reg_addr = address.wrapping_add(i as u8);
@@ -516,6 +654,14 @@ impl RegisterInterface for MockInterface {
                 state
                     .registers
                     .insert((current_bank, reg_addr), byte & !0x80);
+                // The soft reset also clears USER_CTRL, including I2C_IF_DIS.
+                state.registers.insert((Bank::Bank0, 0x03), 0);
+                state.i2c_if_dis = false;
+            }
+
+            // Track the simulated USER_CTRL.I2C_IF_DIS bit.
+            if current_bank == Bank::Bank0 && reg_addr == 0x03 {
+                state.i2c_if_dis = (byte & 0x10) != 0;
             }
 
             // Simulate I2C master slave 4 transaction when I2C_SLV4_CTRL is written (0x15)
