@@ -24,6 +24,121 @@ use crate::power::{
     ClockSource, CycleConfig, LowPowerConfig, PowerMode, PowerStatus, SensorPowerConfig,
 };
 
+/// Await an expression only in the async expansion of [`init_spi_impl`].
+macro_rules! maybe_await {
+    ($expr:expr, blocking) => {
+        $expr
+    };
+    ($expr:expr, asynchronous) => {
+        $expr.await
+    };
+}
+
+/// Emit a register write for the selected blocking or async mode.
+macro_rules! device_write {
+    ($reg:expr, |$w:ident| $body:block, blocking) => {
+        $reg.write(|$w| $body)
+    };
+    ($reg:expr, |$w:ident| $body:block, asynchronous) => {
+        $reg.write_async(|$w| $body).await
+    };
+}
+
+/// Delay for the selected blocking or async mode.
+macro_rules! maybe_delay {
+    ($delay:expr, $ms:expr, blocking) => {
+        $delay.delay_ms($ms)
+    };
+    ($delay:expr, $ms:expr, asynchronous) => {
+        $delay.delay_ms($ms).await
+    };
+}
+
+/// Single implementation of the SPI bring-up sequence.
+///
+/// `$mode` selects the only difference between the blocking and async paths:
+/// whether device I/O and delays are awaited. Every step below is defined once.
+macro_rules! init_spi_body {
+    ($driver:ident, $delay:ident, $mode:ident) => {{
+        // Force a known bank baseline with a write. A read is not valid until
+        // SPI mode is restored after the reset.
+        device_write!(
+            $driver.device.reg_bank_sel(),
+            |w| {
+                w.set_user_bank(0);
+            },
+            $mode
+        )?;
+        $driver.current_bank = Some(Bank::Bank0);
+
+        // Write-only reset. Do not read PWR_MGMT_1 here: reads are not served
+        // over SPI until USER_CTRL.I2C_IF_DIS is written again.
+        device_write!(
+            $driver.device.pwr_mgmt_1(),
+            |w| {
+                w.set_device_reset(true);
+            },
+            $mode
+        )?;
+
+        // Datasheet: up to 100 ms after a soft reset before registers settle.
+        maybe_delay!($delay, 100, $mode);
+
+        // First post-reset access must be this write-only SPI-mode restore.
+        device_write!(
+            $driver.device.user_ctrl(),
+            |w| {
+                w.set_i_2_c_if_dis(true);
+            },
+            $mode
+        )?;
+
+        maybe_delay!($delay, 1, $mode);
+
+        // Wake up and select auto clock source (write-only).
+        device_write!(
+            $driver.device.pwr_mgmt_1(),
+            |w| {
+                w.set_sleep(false);
+                w.set_clksel(1);
+            },
+            $mode
+        )?;
+
+        maybe_delay!($delay, 10, $mode);
+
+        // The soft reset cleared the bank register; track Bank 0 explicitly.
+        $driver.current_bank = Some(Bank::Bank0);
+
+        maybe_await!($driver.verify_who_am_i(), $mode)?;
+
+        Ok(())
+    }};
+}
+
+/// Expand the shared SPI bring-up body and invalidate the bank cache on error.
+macro_rules! init_spi_impl {
+    ($driver:ident, $delay:ident, blocking) => {{
+        let result: Result<(), Error<I::Error>> = (|| init_spi_body!($driver, $delay, blocking))();
+
+        if result.is_err() {
+            $driver.current_bank = None;
+        }
+
+        result
+    }};
+    ($driver:ident, $delay:ident, asynchronous) => {{
+        let result: Result<(), Error<I::Error>> =
+            (async { init_spi_body!($driver, $delay, asynchronous) }).await;
+
+        if result.is_err() {
+            $driver.current_bank = None;
+        }
+
+        result
+    }};
+}
+
 /// Accelerometer data (raw 16-bit values)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -123,6 +238,10 @@ where
     ///
     /// This performs a soft reset and configures basic settings.
     ///
+    /// This is the I2C path. **For SPI use [`init_spi`](Self::init_spi)**: the
+    /// soft reset clears `USER_CTRL.I2C_IF_DIS`, and this method polls
+    /// `PWR_MGMT_1` before restoring it, so reads fail over SPI.
+    ///
     /// **Important**: This function requires a delay provider to ensure proper
     /// timing after device reset. According to the ICM-20948 datasheet Section 3
     /// "ELECTRICAL CHARACTERISTICS", the device requires up to 100ms after reset
@@ -154,6 +273,9 @@ where
     ///
     /// This is a stronger recovery path intended for retries after a failed init
     /// or when the device may have been left in an unknown state.
+    ///
+    /// This is the I2C path. **For SPI use [`init_spi`](Self::init_spi)**; call
+    /// it again as the SPI recovery path.
     ///
     /// # Errors
     ///
@@ -226,10 +348,40 @@ where
         result
     }
 
+    /// Initialize an ICM-20948 connected over SPI
+    ///
+    /// Use this instead of [`init`](Self::init) for an `SpiInterface`.
+    ///
+    /// The soft reset returns the serial interface to its reset state and
+    /// clears `USER_CTRL.I2C_IF_DIS`. Over SPI, register reads do not work again
+    /// until that bit is written, so this method restores SPI mode with
+    /// write-only accesses and fixed delays rather than polling.
+    ///
+    /// Calling this again is the recovery path when the device may have been
+    /// left in an unknown state; [`init`](Self::init)/[`reinit`](Self::reinit)
+    /// remain the I2C path.
+    ///
+    /// # Arguments
+    ///
+    /// * `delay` - Delay provider implementing `embedded_hal::delay::DelayNs`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication with the device fails or the
+    /// `WHO_AM_I` check after the reset does not return 0xEA.
+    pub fn init_spi<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal::delay::DelayNs,
+    {
+        init_spi_impl!(self, delay, blocking)
+    }
+
     /// Enable SPI mode by disabling the I2C slave interface
     ///
-    /// **Required for SPI operation!** Call this immediately after `init()`
-    /// when using the `SpiInterface`. Not needed for I2C.
+    /// **Required for SPI operation when using the legacy [`init`](Self::init)
+    /// flow!** Call this immediately after `init()` when using the
+    /// `SpiInterface`. [`init_spi`](Self::init_spi) performs this write
+    /// internally, so it is not needed with that path. Not needed for I2C.
     ///
     /// When using SPI to communicate with the ICM-20948, the I2C slave interface
     /// must be disabled by setting the `I2C_IF_DIS` bit in the `USER_CTRL` register.
@@ -254,7 +406,7 @@ where
     /// imu.verify_who_am_i()?;
     /// imu.init(&mut delay)?;
     ///
-    /// // Enable SPI mode (required!)
+    /// // Enable SPI mode (required with the legacy init flow!)
     /// imu.enable_spi_mode()?;
     ///
     /// // Now use the device normally
@@ -794,6 +946,10 @@ where
     /// When enabled, the DMP processes sensor data and writes results to the FIFO.
     /// The FIFO is automatically enabled when DMP is enabled.
     ///
+    /// Read the resulting packets with [`crate::dmp::DmpFifoReader`]. The reader
+    /// owns the packet-framing state, so it is the only supported way to read the
+    /// DMP FIFO; do not read the FIFO directly.
+    ///
     /// # Arguments
     ///
     /// * `enable` - `true` to enable the DMP, `false` to disable it
@@ -1119,10 +1275,19 @@ where
     /// Writes configuration to DMP memory to enable features like quaternion output,
     /// calibrated sensor data, and sample rates.
     ///
+    /// The selected [`DmpSampleRate`](crate::dmp::DmpSampleRate) also sets the
+    /// sensor `GYRO_SMPLRT_DIV`/`ACCEL_SMPLRT_DIV`. The DMP ODR registers are
+    /// written as 0 (maximum), so the packet rate equals that sensor rate
+    /// bucket (56.25/112.5/225 Hz) and is not divided a second time.
+    ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
     /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
     /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
     /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
+    ///
+    /// After enabling the DMP, read packets with [`crate::dmp::DmpFifoReader`].
+    /// The reader is the only supported DMP FIFO API and handles packet framing
+    /// across reads.
     ///
     /// # Arguments
     ///
@@ -1135,16 +1300,16 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// # use icm20948::{Icm20948Driver, dmp::DmpConfig};
+    /// # use icm20948::{Icm20948Driver, dmp::{DmpConfig, DmpSampleRate}};
     /// # let mut driver: Icm20948Driver<_> = todo!();
     /// # let mut delay = todo!();
     /// // Initialize and load firmware
     /// driver.dmp_init()?;
     /// delay.delay_ms(2);
     ///
-    /// // Configure for 9-axis quaternion at 100Hz
+    /// // Configure 9-axis quaternion at the validated 112 Hz rate (112.5 Hz actual)
     /// let config = DmpConfig::nine_axis()
-    ///     .with_sample_rate(100);
+    ///     .with_sample_rate(DmpSampleRate::Hz112);
     /// driver.dmp_configure(&config)?;
     ///
     /// // Enable DMP
@@ -1163,7 +1328,7 @@ where
         if (matches!(
             config.fusion_mode,
             DmpFusionMode::NineAxis | DmpFusionMode::GeomagRotationVector
-        ) || config.raw_mag
+        ) || config.dmp_compass
             || config.calibrated_mag)
             && !self.mag_initialized
         {
@@ -1311,138 +1476,6 @@ where
         }
 
         Ok(())
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Read DMP data from FIFO
-    ///
-    /// This method reads and parses DMP packets from the FIFO, extracting
-    /// quaternion and sensor data according to the current configuration.
-    ///
-    /// The method automatically detects packet size based on the FIFO count
-    /// and parses the data into a `DmpData` structure.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DmpData)` if a valid packet was read, or `None` if the
-    /// FIFO is empty or contains an incomplete packet.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use icm20948::Icm20948Driver;
-    /// # let mut driver: Icm20948Driver<_> = todo!();
-    /// // Read DMP data
-    /// if let Some(data) = driver.dmp_read_fifo()? {
-    ///     if let Some(quat) = data.quaternion_9axis {
-    ///         println!("Quaternion: w={:.3}, x={:.3}, y={:.3}, z={:.3}",
-    ///                  quat.w, quat.x, quat.y, quat.z);
-    ///     }
-    /// }
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    #[cfg(feature = "dmp")]
-    pub fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
-        use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
-
-        let overflow = self.fifo_overflow_status()?;
-        if overflow.any_overflow() {
-            self.fifo_reset()?;
-            return Err(Error::FifoOverflow);
-        }
-
-        // Minimum packet is header(2) + footer(2) = 4 bytes, so HEADER_BLOCK is always safe
-        const HEADER_BLOCK: usize = DmpPacketSize::HEADER + DmpPacketSize::HEADER2;
-        let mut remaining_count = self.read_fifo_count()? as usize;
-        if remaining_count < HEADER_BLOCK {
-            return Ok(None);
-        }
-
-        // Read header + header2 together. If HEADER2_BIT is not set, bytes [2..4] are the
-        // first 2 payload bytes — already at the right buffer offset for parse_packet.
-        let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        self.read_fifo_raw(&mut packet_buf[..HEADER_BLOCK])?;
-        remaining_count -= HEADER_BLOCK;
-        let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
-        let header2 = if header & DmpPacketHeader::HEADER2_BIT != 0 {
-            Some(u16::from_be_bytes([packet_buf[2], packet_buf[3]]))
-        } else {
-            None
-        };
-
-        let exact_size = DmpParser::calculate_packet_size(header, header2);
-        let payload = exact_size.saturating_sub(HEADER_BLOCK);
-
-        if payload > 0 {
-            if remaining_count < payload {
-                remaining_count = self.read_fifo_count()? as usize;
-                if remaining_count < payload {
-                    return Ok(None);
-                }
-            }
-            self.read_fifo_raw(&mut packet_buf[HEADER_BLOCK..exact_size])?;
-        }
-
-        let parser = DmpParser::new();
-        if let Some((mut data, _consumed)) = parser.parse_packet(&packet_buf[..exact_size]) {
-            if let Some(raw) = data.raw_accel {
-                let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
-            }
-            Ok(Some(data))
-        } else {
-            Ok(None)
-        }
-    }
-
-    #[cfg(feature = "dmp")]
-    /// Read quaternion data from DMP
-    ///
-    /// This is a convenience method that reads from the FIFO and returns just
-    /// the quaternion data if present.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(Quaternion)` if quaternion data was available, or `None`
-    /// if no data or no quaternion in the packet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use icm20948::Icm20948Driver;
-    /// # let mut driver: Icm20948Driver<_> = todo!();
-    /// if let Some(quat) = driver.dmp_read_quaternion()? {
-    ///     println!("Orientation: w={:.3}, x={:.3}, y={:.3}, z={:.3}",
-    ///              quat.w, quat.x, quat.y, quat.z);
-    /// }
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn dmp_read_quaternion(
-        &mut self,
-    ) -> Result<Option<crate::dmp::Quaternion>, Error<I::Error>> {
-        if let Some(data) = self.dmp_read_fifo()? {
-            // Return first available quaternion type
-            if let Some(quat) = data.quaternion_9axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.quaternion_6axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.geomag_rotation_vector {
-                return Ok(Some(quat));
-            }
-        }
-        Ok(None)
     }
 
     #[cfg(feature = "dmp")]
@@ -1709,21 +1742,24 @@ where
     /// Set DMP output data rate (ODR) for a specific feature
     ///
     /// This function sets the output rate for DMP features like quaternion output,
-    /// accelerometer, gyroscope, or magnetometer data. The DMP runs at 225 Hz internally,
-    /// and the ODR value determines how often data is output.
+    /// accelerometer, gyroscope, or magnetometer data. The DMP running rate is the
+    /// configured sensor ODR (`GYRO_SMPLRT_DIV`/`ACCEL_SMPLRT_DIV`), not a fixed
+    /// 225 Hz; the ODR value divides that running rate.
     ///
     /// # Formula
     ///
     /// ```text
-    /// ODR_value = (225 / desired_Hz) - 1
+    /// ODR_value = (sensor ODR / desired ODR) - 1
     /// ```
     ///
-    /// For example, for 25 Hz output: `ODR_value = (225 / 25) - 1 = 8`
+    /// `0` means "output at the running rate" (maximum) and is what the driver
+    /// writes for every validated sample rate. For example, for 25 Hz output
+    /// from a 225 Hz sensor ODR: `ODR_value = (225 / 25) - 1 = 8`.
     ///
     /// # Arguments
     ///
     /// * `odr_register` - The ODR register address (e.g., `DmpOdrRegisters::QUAT9`)
-    /// * `interval` - The ODR interval value (0 = use sensor rate, higher = slower)
+    /// * `interval` - The ODR interval value (0 = use the sensor rate, higher = slower)
     ///
     /// # Notes
     ///
@@ -4229,6 +4265,11 @@ where
         }
     }
 
+    /// Get a mutable reference to the underlying register device (for advanced usage)
+    pub(crate) const fn device_mut(&mut self) -> &mut crate::registers::Icm20948<I> {
+        &mut self.device
+    }
+
     /// Create a new driver and immediately verify the device identity
     ///
     /// # Errors
@@ -4243,6 +4284,10 @@ where
     /// Initialize the device with default settings
     ///
     /// This performs a soft reset and configures basic settings.
+    ///
+    /// This is the I2C path. **For SPI use [`init_spi`](Self::init_spi)**: the
+    /// soft reset clears `USER_CTRL.I2C_IF_DIS`, and this method polls
+    /// `PWR_MGMT_1` before restoring it, so reads fail over SPI.
     ///
     /// **Important**: This function requires a delay provider to ensure proper
     /// timing after device reset. According to the ICM-20948 datasheet Section 3
@@ -4275,6 +4320,9 @@ where
     ///
     /// This is a stronger recovery path intended for retries after a failed init
     /// or when the device may have been left in an unknown state.
+    ///
+    /// This is the I2C path. **For SPI use [`init_spi`](Self::init_spi)**; call
+    /// it again as the SPI recovery path.
     ///
     /// # Errors
     ///
@@ -4357,6 +4405,34 @@ where
         result
     }
 
+    /// Initialize an ICM-20948 connected over SPI
+    ///
+    /// Use this instead of [`init`](Self::init) for an `SpiInterface`.
+    ///
+    /// The soft reset returns the serial interface to its reset state and
+    /// clears `USER_CTRL.I2C_IF_DIS`. Over SPI, register reads do not work again
+    /// until that bit is written, so this method restores SPI mode with
+    /// write-only accesses and fixed delays rather than polling.
+    ///
+    /// Calling this again is the recovery path when the device may have been
+    /// left in an unknown state; [`init`](Self::init)/[`reinit`](Self::reinit)
+    /// remain the I2C path.
+    ///
+    /// # Arguments
+    ///
+    /// * `delay` - Delay provider implementing `embedded_hal_async::delay::DelayNs`
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if communication with the device fails or the
+    /// `WHO_AM_I` check after the reset does not return 0xEA.
+    pub async fn init_spi<D>(&mut self, delay: &mut D) -> Result<(), Error<I::Error>>
+    where
+        D: embedded_hal_async::delay::DelayNs,
+    {
+        init_spi_impl!(self, delay, asynchronous)
+    }
+
     /// Select a register bank
     ///
     /// The ICM-20948 has 4 register banks that must be selected before
@@ -4381,8 +4457,10 @@ where
 
     /// Enable SPI mode by disabling the I2C slave interface
     ///
-    /// **Required for SPI operation!** Call this immediately after `init()`
-    /// when using the `SpiInterface`. Not needed for I2C.
+    /// **Required for SPI operation when using the legacy [`init`](Self::init)
+    /// flow!** Call this immediately after `init()` when using the
+    /// `SpiInterface`. [`init_spi`](Self::init_spi) performs this write
+    /// internally, so it is not needed with that path. Not needed for I2C.
     ///
     /// When using SPI to communicate with the ICM-20948, the I2C slave interface
     /// must be disabled by setting the `I2C_IF_DIS` bit in the `USER_CTRL` register.
@@ -4407,7 +4485,7 @@ where
     /// imu.verify_who_am_i().await?;
     /// imu.init(&mut delay).await?;
     ///
-    /// // Enable SPI mode (required!)
+    /// // Enable SPI mode (required with the legacy init flow!)
     /// imu.enable_spi_mode().await?;
     ///
     /// // Now use the device normally
@@ -5712,6 +5790,10 @@ where
     /// When enabled, the DMP will process sensor data and write results to the FIFO.
     /// You'll also need to enable the FIFO using `fifo_enable(true)`.
     ///
+    /// Read the resulting packets with [`crate::dmp::DmpFifoReader`]. The reader
+    /// owns the packet-framing state, so it is the only supported way to read the
+    /// DMP FIFO; do not read the FIFO directly.
+    ///
     /// # Arguments
     ///
     /// * `enable` - `true` to enable the DMP, `false` to disable it
@@ -5844,19 +5926,19 @@ where
     /// Set DMP output data rate divider for a specific sensor or quaternion (async)
     ///
     /// This configures how often the DMP produces output for a given data type.
-    /// The DMP runs at a base internal rate of 225Hz. The final output data rate (ODR)
-    /// is calculated using the formula: `ODR = 225Hz / (divider + 1)`.
+    /// The DMP running rate is the configured sensor ODR, not a fixed 225 Hz. The
+    /// final output data rate is `ODR = sensor ODR / (divider + 1)`.
     ///
-    /// Examples:
-    /// - `divider = 0` -> 225Hz / 1 = 225.00 Hz (Maximum DMP output rate)
-    /// - `divider = 1` -> 225Hz / 2 = 112.50 Hz
-    /// - `divider = 3` -> 225Hz / 4 = 56.25 Hz
-    /// - `divider = 4` -> 225Hz / 5 = 45.00 Hz
+    /// Examples (for a 225 Hz sensor ODR):
+    /// - `divider = 0` -> 225 Hz (maximum; output at the running rate)
+    /// - `divider = 1` -> 112.50 Hz
+    /// - `divider = 3` -> 56.25 Hz
+    /// - `divider = 4` -> 45.00 Hz
     ///
     /// # Arguments
     ///
     /// * `odr_register` - The ODR register to configure (from `DmpOdrRegisters`)
-    /// * `divider` - The rate divider to apply (e.g., 0 for 225Hz, 3 for 56.25Hz)
+    /// * `divider` - The divider applied to the running rate (0 = maximum)
     ///
     /// # Notes
     ///
@@ -6121,10 +6203,19 @@ where
     /// Writes configuration to DMP memory to enable features like quaternion output,
     /// calibrated sensor data, and sample rates.
     ///
+    /// The selected [`DmpSampleRate`](crate::dmp::DmpSampleRate) also sets the
+    /// sensor `GYRO_SMPLRT_DIV`/`ACCEL_SMPLRT_DIV`. The DMP ODR registers are
+    /// written as 0 (maximum), so the packet rate equals that sensor rate
+    /// bucket (56.25/112.5/225 Hz) and is not divided a second time.
+    ///
     /// **Important**: The DMP firmware must be loaded first using `dmp_init()` or
     /// `dmp_load_firmware()`. If not loaded, this returns `Error::DmpFirmwareNotLoaded`.
     /// If the configuration enables 9-axis/geomag or magnetometer outputs, call
     /// `dmp_init_magnetometer()` first or this returns `Error::MagnetometerNotInitialized`.
+    ///
+    /// After enabling the DMP, read packets with [`crate::dmp::DmpFifoReader`].
+    /// The reader is the only supported DMP FIFO API and handles packet framing
+    /// across reads.
     ///
     /// # Arguments
     ///
@@ -6137,16 +6228,15 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// # use icm20948::{Icm20948Driver, dmp::DmpConfig};
-    /// # use embassy_time::Delay;
+    /// # use icm20948::{Icm20948Driver, dmp::{DmpConfig, DmpSampleRate}};
     /// # let mut driver: Icm20948Driver<_> = todo!();
     /// # let mut delay = Delay;
     /// // Initialize and load firmware
     /// driver.dmp_init(&mut delay).await?;
     ///
-    /// // Configure for 9-axis quaternion at 100Hz
+    /// // Configure 9-axis quaternion at the validated 112 Hz rate (112.5 Hz actual)
     /// let config = DmpConfig::nine_axis()
-    ///     .with_sample_rate(100);
+    ///     .with_sample_rate(DmpSampleRate::Hz112);
     /// driver.dmp_configure(&config).await?;
     ///
     /// // Enable DMP
@@ -6169,7 +6259,7 @@ where
         if (matches!(
             config.fusion_mode,
             DmpFusionMode::NineAxis | DmpFusionMode::GeomagRotationVector
-        ) || config.raw_mag
+        ) || config.dmp_compass
             || config.calibrated_mag)
             && !self.mag_initialized
         {
@@ -6363,137 +6453,6 @@ where
 
         self.device.interface.read_register(0x7D, 8, buffer).await?;
         Ok(())
-    }
-
-    /// Read DMP data from FIFO
-    ///
-    /// This method reads and parses DMP packets from the FIFO, extracting
-    /// quaternion and sensor data according to the current configuration.
-    ///
-    /// The method automatically detects packet size based on the FIFO count
-    /// and parses the data into a `DmpData` structure.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(DmpData)` if a valid packet was read, or `None` if the
-    /// FIFO is empty or contains an incomplete packet.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::FifoOverflow` if FIFO overflow is detected (FIFO is reset to resync).
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use icm20948::Icm20948Driver;
-    /// # let mut driver: Icm20948Driver<_> = todo!();
-    /// // Read DMP data
-    /// if let Some(data) = driver.dmp_read_fifo().await? {
-    ///     if let Some(quat) = data.quaternion_9axis {
-    ///         println!("Quaternion: w={:.3}, x={:.3}, y={:.3}, z={:.3}",
-    ///                  quat.w, quat.x, quat.y, quat.z);
-    ///     }
-    /// }
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    #[cfg(feature = "dmp")]
-    pub async fn dmp_read_fifo(&mut self) -> Result<Option<crate::dmp::DmpData>, Error<I::Error>> {
-        use crate::dmp::DmpParser;
-        use crate::dmp::config::{DmpPacketHeader, DmpPacketSize};
-
-        let overflow = self.fifo_overflow_status().await?;
-        if overflow.any_overflow() {
-            self.fifo_reset().await?;
-            return Err(Error::FifoOverflow);
-        }
-
-        const HEADER_BLOCK: usize = DmpPacketSize::HEADER + DmpPacketSize::HEADER2;
-        let mut remaining_count = self.read_fifo_count().await? as usize;
-        if remaining_count < HEADER_BLOCK {
-            return Ok(None);
-        }
-
-        // Read header + header2 together. If HEADER2_BIT is not set, bytes [2..4] are the
-        // first 2 payload bytes — already at the right buffer offset for parse_packet.
-        let mut packet_buf = [0u8; DmpPacketSize::MAX_PACKET_SIZE];
-        self.read_fifo_raw(&mut packet_buf[..HEADER_BLOCK]).await?;
-        remaining_count -= HEADER_BLOCK;
-        let header = u16::from_be_bytes([packet_buf[0], packet_buf[1]]);
-        let header2 = if header & DmpPacketHeader::HEADER2_BIT != 0 {
-            Some(u16::from_be_bytes([packet_buf[2], packet_buf[3]]))
-        } else {
-            None
-        };
-
-        let exact_size = DmpParser::calculate_packet_size(header, header2);
-        let payload = exact_size.saturating_sub(HEADER_BLOCK);
-
-        if payload > 0 {
-            if remaining_count < payload {
-                remaining_count = self.read_fifo_count().await? as usize;
-                if remaining_count < payload {
-                    return Ok(None);
-                }
-            }
-            self.read_fifo_raw(&mut packet_buf[HEADER_BLOCK..exact_size])
-                .await?;
-        }
-
-        let parser = DmpParser::new();
-        if let Some((mut data, _consumed)) = parser.parse_packet(&packet_buf[..exact_size]) {
-            if let Some(raw) = data.raw_accel {
-                let (cal_x, cal_y, cal_z) = self.accel_calibration.apply(raw.0, raw.1, raw.2);
-                data.host_calibrated_accel = Some((cal_x, cal_y, cal_z));
-            }
-            Ok(Some(data))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Read quaternion data from DMP
-    ///
-    /// This is a convenience method that reads from the FIFO and returns just
-    /// the quaternion data if present.
-    ///
-    /// # Returns
-    ///
-    /// Returns `Some(Quaternion)` if quaternion data was available, or `None`
-    /// if no data or no quaternion in the packet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if communication with the device fails.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use icm20948::Icm20948Driver;
-    /// # let mut driver: Icm20948Driver<_> = todo!();
-    /// if let Some(quat) = driver.dmp_read_quaternion().await? {
-    ///     println!("Orientation: w={:.3}, x={:.3}, y={:.3}, z={:.3}",
-    ///              quat.w, quat.x, quat.y, quat.z);
-    /// }
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    #[cfg(feature = "dmp")]
-    pub async fn dmp_read_quaternion(
-        &mut self,
-    ) -> Result<Option<crate::dmp::Quaternion>, Error<I::Error>> {
-        if let Some(data) = self.dmp_read_fifo().await? {
-            // Return first available quaternion type
-            if let Some(quat) = data.quaternion_9axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.quaternion_6axis {
-                return Ok(Some(quat));
-            }
-            if let Some(quat) = data.geomag_rotation_vector {
-                return Ok(Some(quat));
-            }
-        }
-        Ok(None)
     }
 
     /// Initialize the magnetometer (AK09916) via I2C master interface
@@ -7034,9 +6993,9 @@ where
         }
 
         let calibration = crate::sensors::MagCalibration {
-            offset_x: (max_x + min_x) * 0.5,
-            offset_y: (max_y + min_y) * 0.5,
-            offset_z: (max_z + min_z) * 0.5,
+            offset_x: f32::midpoint(max_x, min_x),
+            offset_y: f32::midpoint(max_y, min_y),
+            offset_z: f32::midpoint(max_z, min_z),
             scale_x: 1.0,
             scale_y: 1.0,
             scale_z: 1.0,

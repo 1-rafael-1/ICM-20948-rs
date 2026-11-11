@@ -108,14 +108,55 @@ pub enum DmpSampleRate {
 }
 
 impl DmpSampleRate {
-    /// Get the gyro sample rate divider for this rate
+    /// Get the hardware gyro sample rate divider for this rate.
     ///
-    /// Formula: ODR = 1100 Hz / (1 + divider)
+    /// This is the divider written to the sensor's `GYRO_SMPLRT_DIV` register,
+    /// not the DMP output divider. Formula: ODR = 1100 Hz / (1 + divider).
+    ///
+    /// Use [`dmp_output_divider`](Self::dmp_output_divider) for the divider that
+    /// controls the DMP output rate.
     pub const fn gyro_sample_rate_div(&self) -> u8 {
         match self {
             Self::Hz56 => 19, // 1100 / 20 = 55 Hz
             Self::Hz112 => 9, // 1100 / 10 = 110 Hz
             Self::Hz225 => 4, // 1100 / 5 = 220 Hz
+        }
+    }
+
+    /// Get the value written to the DMP ODR registers for this rate.
+    ///
+    /// The DMP runs at the configured sensor ODR, which `dmp_configure` sets
+    /// from this same rate via `GYRO_SMPLRT_DIV`/`ACCEL_SMPLRT_DIV`. The ODR
+    /// register is therefore written as `0` (maximum) for every validated rate
+    /// so the sensor rate is not divided a second time.
+    ///
+    /// This is distinct from the hardware sensor divider returned by
+    /// [`gyro_sample_rate_div`](Self::gyro_sample_rate_div). A non-zero value
+    /// here would divide the already-lowered sensor rate again.
+    pub const fn dmp_output_divider(&self) -> u8 {
+        match self {
+            Self::Hz56 | Self::Hz112 | Self::Hz225 => 0,
+        }
+    }
+
+    /// Get the actual DMP output rate in Hz.
+    ///
+    /// This is the rate the DMP produces in the FIFO, which may differ from the
+    /// nominal value returned by [`nominal_hz`](Self::nominal_hz).
+    pub const fn actual_output_hz(&self) -> f32 {
+        match self {
+            Self::Hz56 => 56.25,
+            Self::Hz112 => 112.5,
+            Self::Hz225 => 225.0,
+        }
+    }
+
+    /// Get the nominal DMP output rate in whole Hz.
+    pub const fn nominal_hz(&self) -> u16 {
+        match self {
+            Self::Hz56 => 56,
+            Self::Hz112 => 112,
+            Self::Hz225 => 225,
         }
     }
 
@@ -191,135 +232,6 @@ impl DmpSampleRate {
             Self::Hz112
         } else {
             Self::Hz225
-        }
-    }
-}
-
-/// Configuration for arbitrary DMP sample rates with interpolated calibration parameters
-///
-/// For rates not in the validated set (56, 112, 225 Hz), this struct provides
-/// linearly interpolated calibration parameters based on the nearest validated rates.
-///
-/// # Warning
-///
-/// Interpolated parameters are not fully validated. Use at your own risk.
-/// For production use, stick to the validated rates in `DmpSampleRate`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct ArbitrarySampleRate {
-    /// Gyro sample rate divider (ODR = 1100 Hz / (1 + div))
-    pub gyro_div: u8,
-    /// Accelerometer only gain parameter
-    pub accel_only_gain: u32,
-    /// Accelerometer alpha variance parameter
-    pub accel_alpha_var: u32,
-    /// Accelerometer A variance parameter
-    pub accel_a_var: u32,
-}
-
-impl ArbitrarySampleRate {
-    /// Calculate interpolated parameters for an arbitrary sample rate
-    ///
-    /// This function linearly interpolates calibration parameters between the
-    /// nearest validated rates. The interpolation assumes the parameters scale
-    /// linearly with sample rate, which is an approximation.
-    ///
-    /// # Arguments
-    ///
-    /// * `hz` - Target sample rate in Hz (clamped to 4-550 Hz range)
-    ///
-    /// # Returns
-    ///
-    /// `ArbitrarySampleRate` with interpolated parameters, or `None` if the rate
-    /// matches a validated rate (use `DmpSampleRate` instead).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use icm20948::dmp::config::ArbitrarySampleRate;
-    /// // Get interpolated parameters for 75 Hz
-    /// let rate_config = ArbitrarySampleRate::interpolate(75).unwrap();
-    /// assert_eq!(rate_config.gyro_div, 13); // 1100 / 14 ≈ 78.57 Hz
-    /// ```
-    pub fn interpolate(hz: u16) -> Option<Self> {
-        // Clamp to reasonable range: 4 Hz (div=274) to 550 Hz (div=1)
-        let hz = hz.clamp(4, 550);
-
-        // Calculate gyro divider: ODR = 1100 / (1 + div)
-        let gyro_div = if hz >= 1100 {
-            0
-        } else {
-            ((1100 / u32::from(hz)).saturating_sub(1)).min(255) as u8
-        };
-
-        // If this exactly matches a validated rate, return None
-        // (caller should use DmpSampleRate enum instead)
-        if gyro_div == 19 || gyro_div == 9 || gyro_div == 4 {
-            return None;
-        }
-
-        // Linear interpolation between validated rates
-        let (lower_rate, upper_rate) = if hz <= 56 {
-            // Extrapolate below 56 Hz using 56-112 Hz slope
-            (DmpSampleRate::Hz56, DmpSampleRate::Hz112)
-        } else if hz <= 112 {
-            // Interpolate between 56-112 Hz
-            (DmpSampleRate::Hz56, DmpSampleRate::Hz112)
-        } else if hz <= 225 {
-            // Interpolate between 112-225 Hz
-            (DmpSampleRate::Hz112, DmpSampleRate::Hz225)
-        } else {
-            // Extrapolate above 225 Hz using 112-225 Hz slope
-            (DmpSampleRate::Hz112, DmpSampleRate::Hz225)
-        };
-
-        let lower_hz = 1100.0 / (1.0 + f32::from(lower_rate.gyro_sample_rate_div()));
-        let upper_hz = 1100.0 / (1.0 + f32::from(upper_rate.gyro_sample_rate_div()));
-        let hz_f = f32::from(hz);
-
-        // Interpolation factor
-        let t = (hz_f - lower_hz) / (upper_hz - lower_hz);
-        let t = t.clamp(0.0, 1.0);
-
-        // Interpolate each parameter
-        let accel_only_gain = Self::lerp_u32(
-            lower_rate.accel_only_gain(),
-            upper_rate.accel_only_gain(),
-            t,
-        );
-        let accel_alpha_var = Self::lerp_u32(
-            lower_rate.accel_alpha_var(),
-            upper_rate.accel_alpha_var(),
-            t,
-        );
-        let accel_a_var = Self::lerp_u32(lower_rate.accel_a_var(), upper_rate.accel_a_var(), t);
-
-        Some(Self {
-            gyro_div,
-            accel_only_gain,
-            accel_alpha_var,
-            accel_a_var,
-        })
-    }
-
-    /// Linear interpolation for u32 values
-    #[inline]
-    #[allow(clippy::cast_precision_loss)]
-    fn lerp_u32(a: u32, b: u32, t: f32) -> u32 {
-        let a_f = a as f32;
-        let b_f = b as f32;
-        let result = a_f + (b_f - a_f) * t;
-        let rounded = libm::roundf(result);
-        // Clamp to valid u32 range
-        if rounded < 0.0 {
-            0
-        } else if rounded > u32::MAX as f32 {
-            u32::MAX
-        } else {
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            {
-                rounded as u32
-            }
         }
     }
 }
@@ -432,8 +344,8 @@ bitflags::bitflags! {
         const RAW_ACCEL              = 1 << 7;
         /// Enable raw gyroscope output from DMP
         const RAW_GYRO               = 1 << 8;
-        /// Enable raw magnetometer output from DMP
-        const RAW_MAG                = 1 << 9;
+        /// Enable DMP raw compass output
+        const DMP_COMPASS            = 1 << 9;
         /// Enable pedometer step detector (triggers an event on step)
         const STEP_DETECTOR          = 1 << 10;
         /// Enable pedometer step counter (tracks total steps)
@@ -498,7 +410,7 @@ impl DmpFeatures {
         }
 
         if self.intersects(
-            Self::RAW_MAG
+            Self::DMP_COMPASS
                 | Self::CALIBRATED_MAG
                 | Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR,
@@ -535,7 +447,7 @@ impl DmpFeatures {
         if self.intersects(Self::RAW_GYRO) {
             c1.insert(DmpControl1Flags::GYRO);
         }
-        if self.intersects(Self::RAW_MAG | Self::CALIBRATED_MAG) {
+        if self.intersects(Self::DMP_COMPASS | Self::CALIBRATED_MAG) {
             c1.insert(DmpControl1Flags::COMPASS);
         }
 
@@ -559,7 +471,7 @@ impl DmpFeatures {
             || self.intersects(
                 Self::RAW_ACCEL
                     | Self::RAW_GYRO
-                    | Self::RAW_MAG
+                    | Self::DMP_COMPASS
                     | Self::HOST_CALIBRATED_ACCEL
                     | Self::CALIBRATED_GYRO
                     | Self::CALIBRATED_MAG,
@@ -597,7 +509,7 @@ impl DmpFeatures {
         if self.intersects(
             Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
-                | Self::RAW_MAG
+                | Self::DMP_COMPASS
                 | Self::CALIBRATED_MAG,
         ) {
             rdy.insert(DmpDataReadyStatus::COMPASS);
@@ -630,7 +542,7 @@ impl DmpFeatures {
         if self.intersects(
             Self::QUATERNION_9AXIS
                 | Self::GEOMAG_ROTATION_VECTOR
-                | Self::RAW_MAG
+                | Self::DMP_COMPASS
                 | Self::CALIBRATED_MAG,
         ) {
             me.insert(DmpMotionEventControl::COMPASS_CALIBR);
@@ -747,8 +659,11 @@ impl DmpMemoryAddresses {
 
 /// DMP Output Data Rate (ODR) register addresses
 ///
-/// These registers control the output rate for each DMP feature
-/// The value to write is calculated as: Value = (DMP running rate (225Hz) / desired ODR) - 1.
+/// These registers hold a divider applied to the DMP running rate for each
+/// feature. The running rate is the configured sensor ODR
+/// (`GYRO_SMPLRT_DIV`/`ACCEL_SMPLRT_DIV`), not a fixed 225 Hz. The value to
+/// write is `Value = (DMP running rate / desired ODR) - 1`; `0` means output at
+/// the running rate. The driver writes `0` for every validated rate.
 pub struct DmpOdrRegisters;
 
 impl DmpOdrRegisters {
@@ -1005,8 +920,8 @@ impl DmpConfig {
         if self.raw_gyro {
             f.insert(DmpFeatures::RAW_GYRO);
         }
-        if self.raw_mag {
-            f.insert(DmpFeatures::RAW_MAG);
+        if self.dmp_compass {
+            f.insert(DmpFeatures::DMP_COMPASS);
         }
         if self.step_detector {
             f.insert(DmpFeatures::STEP_DETECTOR);
@@ -1078,24 +993,6 @@ impl DmpConfig {
         }
         size
     }
-
-    /// Calculate DMP sample rate divider
-    ///
-    /// The DMP sample rate is derived from the gyroscope sample rate divided
-    /// by (1 + divider). For a gyro rate of 225 Hz, the divider is:
-    ///
-    /// divider = (225 / `desired_rate`) - 1
-    ///
-    /// Returns the divider value to write to the DMP.
-    pub const fn sample_rate_divider(&self) -> u16 {
-        const GYRO_RATE: u16 = 225; // Hz
-
-        if self.sample_rate == 0 || self.sample_rate > GYRO_RATE {
-            return 0; // Invalid, default to maximum rate
-        }
-
-        (GYRO_RATE / self.sample_rate).saturating_sub(1)
-    }
 }
 
 /// Configuration sequence builder
@@ -1106,10 +1003,11 @@ pub struct ConfigSequence {
     /// Feature mask to enable
     pub features: DmpFeatures,
 
-    /// Sample rate
+    /// Validated DMP sample rate
     pub sample_rate: DmpSampleRate,
 
-    /// Sample rate divider
+    /// Value written to the DMP ODR registers (0 = maximum; the sensor ODR
+    /// already sets the packet rate, so no further division is applied)
     pub rate_divider: u16,
 
     /// FIFO watermark (bytes before interrupt)
@@ -1164,12 +1062,13 @@ impl ConfigSequence {
         let data_rdy_status = features.as_data_ready();
         let motion_event_ctl = features.as_motion_event();
 
-        let rate_divider = config.sample_rate_divider();
+        let rate_divider = u16::from(config.sample_rate.dmp_output_divider());
         #[allow(clippy::cast_possible_truncation)]
         let fifo_watermark = config.packet_size() as u16;
 
-        // Calculate sample-rate-dependent parameters
-        let sample_rate_config = DmpSampleRate::from_hz(config.sample_rate);
+        // Use the same validated rate for the divider, calibration parameters
+        // and hardware sensor dividers so they cannot disagree.
+        let sample_rate_config = config.sample_rate;
 
         // Use PLL=0x09 as default
         // For best accuracy, read from Bank 1, reg 0x28 (TIMEBASE_CORRECTION_PLL)
@@ -1363,6 +1262,9 @@ mod tests {
         // Test 56Hz values match Cybergear
         let rate = DmpSampleRate::Hz56;
         assert_eq!(rate.gyro_sample_rate_div(), 19);
+        assert_eq!(rate.dmp_output_divider(), 0);
+        assert_eq!(rate.nominal_hz(), 56);
+        assert_eq!(rate.actual_output_hz(), 56.25);
         assert_eq!(rate.accel_only_gain(), 0x03A49249);
         assert_eq!(rate.accel_alpha_var(), 0x34924925);
         assert_eq!(rate.accel_a_var(), 0x0B6DB6DB);
@@ -1370,11 +1272,17 @@ mod tests {
         // Test 112Hz values
         let rate = DmpSampleRate::Hz112;
         assert_eq!(rate.gyro_sample_rate_div(), 9);
+        assert_eq!(rate.dmp_output_divider(), 0);
+        assert_eq!(rate.nominal_hz(), 112);
+        assert_eq!(rate.actual_output_hz(), 112.5);
         assert_eq!(rate.accel_only_gain(), 0x01D1745D);
 
         // Test 225Hz values
         let rate = DmpSampleRate::Hz225;
         assert_eq!(rate.gyro_sample_rate_div(), 4);
+        assert_eq!(rate.dmp_output_divider(), 0);
+        assert_eq!(rate.nominal_hz(), 225);
+        assert_eq!(rate.actual_output_hz(), 225.0);
         assert_eq!(rate.accel_only_gain(), 0x00E8BA2E);
     }
 
@@ -1386,6 +1294,14 @@ mod tests {
         assert_eq!(DmpSampleRate::from_hz(112), DmpSampleRate::Hz112);
         assert_eq!(DmpSampleRate::from_hz(200), DmpSampleRate::Hz225);
         assert_eq!(DmpSampleRate::from_hz(225), DmpSampleRate::Hz225);
+    }
+
+    #[test]
+    fn test_dmp_sample_rate_snapping_boundaries() {
+        assert_eq!(DmpSampleRate::from_hz(84), DmpSampleRate::Hz56);
+        assert_eq!(DmpSampleRate::from_hz(85), DmpSampleRate::Hz112);
+        assert_eq!(DmpSampleRate::from_hz(168), DmpSampleRate::Hz112);
+        assert_eq!(DmpSampleRate::from_hz(169), DmpSampleRate::Hz225);
     }
 
     #[test]
@@ -1453,123 +1369,110 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_rate_divider_100hz() {
-        let config = DmpConfig::new().with_sample_rate(100);
-        let divider = config.sample_rate_divider();
-        // 225 / 100 - 1 = 2 - 1 = 1 (integer division)
-        assert_eq!(divider, 1);
+    fn test_with_nearest_sample_rate_100hz_snaps_to_112() {
+        let config = DmpConfig::new().with_nearest_sample_rate(100);
+
+        assert_eq!(config.sample_rate, DmpSampleRate::Hz112);
+        assert_eq!(config.dmp_output_divider(), 0);
+        assert_eq!(config.actual_output_hz(), 112.5);
     }
 
     #[test]
-    fn test_sample_rate_divider_225hz() {
-        let config = DmpConfig::new().with_sample_rate(225);
-        let divider = config.sample_rate_divider();
-        assert_eq!(divider, 0);
-    }
-
-    #[test]
-    fn test_with_sample_rate_clamping() {
-        // 0 is clamped to 1 Hz (minimum)
-        let config = DmpConfig::new().with_sample_rate(0);
-        assert_eq!(config.sample_rate, 1);
-        // divider = (225 / 1) - 1 = 224
-        assert_eq!(config.sample_rate_divider(), 224);
-        // calibration params also consistently use the 56 Hz bucket
+    fn test_with_nearest_sample_rate_boundaries() {
         assert_eq!(
-            DmpSampleRate::from_hz(config.sample_rate),
+            DmpConfig::new().with_nearest_sample_rate(84).sample_rate,
             DmpSampleRate::Hz56
         );
-
-        // >225 is clamped to 225 Hz (maximum)
-        let config = DmpConfig::new().with_sample_rate(300);
-        assert_eq!(config.sample_rate, 225);
-        // divider = (225 / 225) - 1 = 0
-        assert_eq!(config.sample_rate_divider(), 0);
-        // calibration params match divider: Hz225
         assert_eq!(
-            DmpSampleRate::from_hz(config.sample_rate),
+            DmpConfig::new().with_nearest_sample_rate(85).sample_rate,
+            DmpSampleRate::Hz112
+        );
+        assert_eq!(
+            DmpConfig::new().with_nearest_sample_rate(168).sample_rate,
+            DmpSampleRate::Hz112
+        );
+        assert_eq!(
+            DmpConfig::new().with_nearest_sample_rate(169).sample_rate,
             DmpSampleRate::Hz225
         );
     }
 
     #[test]
+    fn test_config_exposes_dmp_output_divider_and_actual_rate() {
+        let config = DmpConfig::new().with_sample_rate(DmpSampleRate::Hz56);
+        assert_eq!(config.dmp_output_divider(), 0);
+        assert_eq!(config.actual_output_hz(), 56.25);
+
+        let config = DmpConfig::new().with_sample_rate(DmpSampleRate::Hz112);
+        assert_eq!(config.dmp_output_divider(), 0);
+        assert_eq!(config.actual_output_hz(), 112.5);
+
+        let config = DmpConfig::new().with_sample_rate(DmpSampleRate::Hz225);
+        assert_eq!(config.dmp_output_divider(), 0);
+        assert_eq!(config.actual_output_hz(), 225.0);
+    }
+
+    #[test]
+    fn test_config_sequence_uses_one_rate_for_divider_and_calibration() {
+        let config = DmpConfig::six_axis().with_nearest_sample_rate(100);
+        let seq = ConfigSequence::from_config(&config);
+
+        assert_eq!(seq.sample_rate, DmpSampleRate::Hz112);
+        assert_eq!(
+            seq.rate_divider,
+            u16::from(DmpSampleRate::Hz112.dmp_output_divider())
+        );
+        assert_eq!(
+            seq.accel_only_gain_bytes,
+            DmpSampleRate::Hz112.accel_only_gain().to_be_bytes()
+        );
+        assert_eq!(
+            seq.accel_alpha_var_bytes,
+            DmpSampleRate::Hz112.accel_alpha_var().to_be_bytes()
+        );
+        assert_eq!(
+            seq.accel_a_var_bytes,
+            DmpSampleRate::Hz112.accel_a_var().to_be_bytes()
+        );
+    }
+
+    #[test]
     fn test_config_sequence() {
-        let config = DmpConfig::six_axis().with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
         let seq = ConfigSequence::from_config(&config);
 
         assert!(seq.features.contains(DmpFeatures::QUATERNION_6AXIS));
-        assert_eq!(seq.rate_divider, 1);
+        assert_eq!(seq.rate_divider, 0);
         assert!(seq.fifo_watermark > 0);
     }
 
     #[test]
-    fn test_arbitrary_sample_rate_interpolate_75hz() {
-        // Test interpolation for 75 Hz (between 56 and 112 Hz)
-        let rate = ArbitrarySampleRate::interpolate(75).unwrap();
-        // 1100 / 75 ≈ 14.67, so gyro_div should be 13 or 14
-        assert!(rate.gyro_div == 13 || rate.gyro_div == 14);
+    fn test_config_sequence_writes_zero_to_every_odr_register() {
+        let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
+        let seq = ConfigSequence::from_config(&config);
+        let writes = seq.get_init_sequence();
 
-        // Parameters should be between 56Hz and 112Hz values
-        assert!(rate.accel_only_gain > 0x01D1745D);
-        assert!(rate.accel_only_gain < 0x03A49249);
-        assert!(rate.accel_alpha_var > 0x34924925);
-        assert!(rate.accel_alpha_var < 0x3A492492);
-    }
+        let odr_addresses = [
+            DmpOdrRegisters::QUAT9,
+            DmpOdrRegisters::QUAT6,
+            DmpOdrRegisters::ACCEL,
+            DmpOdrRegisters::GYRO,
+            DmpOdrRegisters::CPASS,
+            DmpOdrRegisters::CPASS_CALIBR,
+            DmpOdrRegisters::GEOMAG,
+            DmpOdrRegisters::PQUAT6,
+        ];
 
-    #[test]
-    fn test_arbitrary_sample_rate_interpolate_150hz() {
-        // Test interpolation for 150 Hz (between 112 and 225 Hz)
-        let rate = ArbitrarySampleRate::interpolate(150).unwrap();
-        // 1100 / 150 ≈ 7.33, so gyro_div should be 6 or 7
-        assert!(rate.gyro_div >= 6 && rate.gyro_div <= 7);
-
-        // Parameters should be between 112Hz and 225Hz values
-        assert!(rate.accel_only_gain > 0x00E8BA2E);
-        assert!(rate.accel_only_gain < 0x01D1745D);
-    }
-
-    #[test]
-    fn test_arbitrary_sample_rate_exact_match_returns_none() {
-        // The three validated gyro dividers are 19, 9, and 4.
-        // ODR = 1100 / (1 + div), so the exact Hz values that produce those dividers are:
-        //   div=19 → 1100/20 = 55 Hz
-        //   div=9  → 1100/10 = 110 Hz
-        //   div=4  → 1100/5  = 220 Hz
-        // The enum names Hz56/Hz112/Hz225 are nominal; the formula determines the real match.
-        assert!(ArbitrarySampleRate::interpolate(55).is_none());
-        assert!(ArbitrarySampleRate::interpolate(110).is_none());
-        assert!(ArbitrarySampleRate::interpolate(220).is_none());
-    }
-
-    #[test]
-    fn test_arbitrary_sample_rate_clamping() {
-        // Test that very low rates are clamped and interpolated
-        let rate_low = ArbitrarySampleRate::interpolate(1).unwrap();
-        assert!(rate_low.gyro_div > 0); // Should be clamped to minimum 4 Hz
-
-        // Test that very high rates are clamped
-        let rate_high = ArbitrarySampleRate::interpolate(1000).unwrap();
-        assert!(rate_high.gyro_div < 255); // Should be clamped to max ~550 Hz
-    }
-
-    #[test]
-    fn test_arbitrary_sample_rate_extrapolation_low() {
-        // Test extrapolation below 56 Hz
-        let rate = ArbitrarySampleRate::interpolate(30).unwrap();
-
-        // Should extrapolate using 56-112 slope
-        // Lower rates generally have larger calibration values
-        assert!(rate.accel_only_gain > 0);
-        assert!(rate.gyro_div > 19); // Larger divider for lower rate
-    }
-
-    #[test]
-    fn test_arbitrary_sample_rate_extrapolation_high() {
-        // Test extrapolation above 225 Hz
-        let rate = ArbitrarySampleRate::interpolate(300).unwrap();
-
-        // Should extrapolate using 112-225 slope
-        // Gyro div should be small for high rate
-        assert!(rate.gyro_div <= 3); // 1100/300 ≈ 3.67
+        for address in odr_addresses {
+            let write = writes
+                .iter()
+                .find(|write| write.address == address)
+                .unwrap_or_else(|| panic!("missing ODR write for 0x{address:04X}"));
+            assert_eq!(
+                write.data,
+                &[0x00, 0x00],
+                "ODR register 0x{address:04X} must be set to maximum (0)"
+            );
+        }
     }
 }

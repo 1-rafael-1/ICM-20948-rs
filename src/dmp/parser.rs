@@ -187,7 +187,7 @@ impl DmpParser {
             if data.len() < offset + DmpPacketSize::ACCEL_COMPASS {
                 return None;
             }
-            dmp_data.raw_mag = self.parse_accel_gyro(&data[offset..]);
+            dmp_data.dmp_compass = self.parse_accel_gyro(&data[offset..]);
             offset += DmpPacketSize::ACCEL_COMPASS;
         }
 
@@ -410,7 +410,7 @@ impl DmpParser {
     ///
     /// Returns `Some((x, y, z))` if parsing succeeded, `None` if data too short.
     #[allow(clippy::unused_self)]
-    fn parse_accel_gyro(&self, data: &[u8]) -> Option<(i16, i16, i16)> {
+    const fn parse_accel_gyro(&self, data: &[u8]) -> Option<(i16, i16, i16)> {
         if data.len() < DmpPacketSize::ACCEL_COMPASS {
             return None;
         }
@@ -434,7 +434,7 @@ impl DmpParser {
     ///
     /// Returns `Some((x, y, z))` if parsing succeeded, `None` if data too short.
     #[allow(clippy::unused_self)]
-    fn parse_calibrated_gyro(&self, data: &[u8]) -> Option<(i32, i32, i32)> {
+    const fn parse_calibrated_gyro(&self, data: &[u8]) -> Option<(i32, i32, i32)> {
         if data.len() < DmpPacketSize::CAL_GYRO {
             return None;
         }
@@ -488,7 +488,7 @@ impl DmpParser {
     /// # Returns
     ///
     /// Returns `Some(header)` if data is long enough, `None` otherwise.
-    pub fn extract_header(&self, data: &[u8]) -> Option<u16> {
+    pub const fn extract_header(&self, data: &[u8]) -> Option<u16> {
         if data.len() < 2 {
             return None;
         }

@@ -12,10 +12,15 @@ mod unit {
     mod config_validation;
     mod data_integrity;
     mod dmp;
+    #[cfg(feature = "dmp")]
+    mod dmp_fifo_reader;
+    #[cfg(feature = "dmp")]
+    mod dmp_mag_snapshot;
     mod error_handling;
     mod gyro_calibration;
     mod magnetometer;
     mod self_test;
+    mod spi_init;
     mod temperature;
 }
 

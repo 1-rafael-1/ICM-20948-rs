@@ -14,15 +14,55 @@ use icm20948::{
 };
 
 #[cfg(feature = "dmp")]
-use icm20948::dmp::DmpConfig;
+use icm20948::dmp::config::DmpPacketSize;
+#[cfg(feature = "dmp")]
+use icm20948::dmp::{DmpConfig, DmpFifoReader, DmpPacketHeader, DmpSampleRate};
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+/// Shared handle to the mock FIFO byte stream.
+///
+/// Cloning the handle lets a test append bytes after the mock has been moved
+/// into the driver's interface.
+#[derive(Clone)]
+struct FifoHandle {
+    bytes: Rc<RefCell<VecDeque<u8>>>,
+}
+
+impl FifoHandle {
+    fn new() -> Self {
+        Self {
+            bytes: Rc::new(RefCell::new(VecDeque::new())),
+        }
+    }
+
+    fn set(&self, data: &[u8]) {
+        let mut bytes = self.bytes.borrow_mut();
+        bytes.clear();
+        bytes.extend(data.iter().copied());
+    }
+
+    fn append(&self, data: &[u8]) {
+        self.bytes.borrow_mut().extend(data.iter().copied());
+    }
+
+    fn len(&self) -> usize {
+        self.bytes.borrow().len()
+    }
+
+    fn pop(&self) -> Option<u8> {
+        self.bytes.borrow_mut().pop_front()
+    }
+}
 
 // Mock async I2C implementation for testing
 struct MockAsyncI2c {
     who_am_i_value: u8,
     bank: u8,
     fail_next: bool,
-    fifo_count: u16,
-    fifo_data: [u8; 512],
+    fifo: FifoHandle,
     mag_initialized: bool,
     i2c_slv_4_di: u8, // I2C Slave 4 data in register
     mag_ext_slv_data: [u8; 8],
@@ -35,8 +75,7 @@ impl MockAsyncI2c {
             who_am_i_value: WHO_AM_I_VALUE,
             bank: 0,
             fail_next: false,
-            fifo_count: 0,
-            fifo_data: [0; 512],
+            fifo: FifoHandle::new(),
             mag_initialized: false,
             i2c_slv_4_di: 0x09, // AK09916 WHO_AM_I value
             mag_ext_slv_data: [0; 8],
@@ -45,15 +84,28 @@ impl MockAsyncI2c {
     }
 
     fn with_fifo_data(count: u16) -> Self {
-        let mut mock = Self::new();
-        mock.fifo_count = count;
-        // Fill with dummy sensor data pattern (accel + gyro = 12 bytes per sample)
-        for i in 0..count as usize {
-            mock.fifo_data[i] = (i % 256) as u8;
-        }
-        mock.mag_initialized = false;
-        mock.i2c_slv_4_di = 0x09;
+        let mock = Self::new();
+        let pattern: Vec<u8> = (0..count as usize).map(|i| (i % 256) as u8).collect();
+        mock.fifo.set(&pattern);
         mock
+    }
+
+    /// Return a handle to the FIFO stream that remains usable after the mock
+    /// is moved into an interface.
+    fn fifo_handle(&self) -> FifoHandle {
+        self.fifo.clone()
+    }
+
+    /// Replace the simulated FIFO stream
+    #[allow(dead_code)]
+    fn set_fifo_data(&mut self, data: &[u8]) {
+        self.fifo.set(data);
+    }
+
+    /// Append bytes to the simulated FIFO stream
+    #[allow(dead_code)]
+    fn append_fifo_data(&mut self, data: &[u8]) {
+        self.fifo.append(data);
     }
 
     fn with_invalid_who_am_i() -> Self {
@@ -61,8 +113,7 @@ impl MockAsyncI2c {
             who_am_i_value: 0xFF,
             bank: 0,
             fail_next: false,
-            fifo_count: 0,
-            fifo_data: [0; 512],
+            fifo: FifoHandle::new(),
             mag_initialized: false,
             i2c_slv_4_di: 0x09,
             mag_ext_slv_data: [0; 8],
@@ -114,6 +165,131 @@ async fn new_verified(interface: TestInterface) -> TestDriver {
         .await
         .expect("Failed to verify WHO_AM_I");
     imu
+}
+
+/// Shared state for [`SpiModeMock`].
+struct SpiModeState {
+    spi_only: bool,
+    i2c_if_dis: bool,
+    spi_mode_violations: u32,
+}
+
+/// Minimal async mock that models the `USER_CTRL.I2C_IF_DIS` handshake.
+///
+/// It is kept separate from [`MockAsyncI2c`] so the SPI-init regression can
+/// observe whether any register read happened before the SPI-mode restore.
+struct SpiModeMock {
+    state: Rc<RefCell<SpiModeState>>,
+    bank: u8,
+    pwr_mgmt_1: u8,
+}
+
+impl SpiModeMock {
+    /// Create an SPI-only device whose reads fail until `USER_CTRL.I2C_IF_DIS`
+    /// is written after the soft reset.
+    fn spi_only() -> (Self, Rc<RefCell<SpiModeState>>) {
+        let state = Rc::new(RefCell::new(SpiModeState {
+            spi_only: true,
+            i2c_if_dis: true,
+            spi_mode_violations: 0,
+        }));
+
+        (
+            Self {
+                state: Rc::clone(&state),
+                bank: 0,
+                pwr_mgmt_1: 0,
+            },
+            state,
+        )
+    }
+
+    fn check_spi_mode(&self) -> Result<(), MockError> {
+        let violated = {
+            let state = self.state.borrow();
+            state.spi_only && !state.i2c_if_dis
+        };
+
+        if violated {
+            self.state.borrow_mut().spi_mode_violations += 1;
+            return Err(MockError);
+        }
+
+        Ok(())
+    }
+}
+
+impl embedded_hal_async::i2c::ErrorType for SpiModeMock {
+    type Error = MockError;
+}
+
+impl embedded_hal_async::i2c::I2c for SpiModeMock {
+    async fn transaction(
+        &mut self,
+        _address: u8,
+        _operations: &mut [embedded_hal_async::i2c::Operation<'_>],
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn read(&mut self, _address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
+        self.check_spi_mode()?;
+        read.fill(0);
+        Ok(())
+    }
+
+    async fn write(&mut self, _address: u8, write: &[u8]) -> Result<(), Self::Error> {
+        let Some((&reg, rest)) = write.split_first() else {
+            return Ok(());
+        };
+        let Some(&value) = rest.first() else {
+            return Ok(());
+        };
+
+        match reg {
+            0x7F => self.bank = value >> 4,
+            0x06 if self.bank == 0 => {
+                self.pwr_mgmt_1 = value;
+                // A soft reset clears USER_CTRL, including I2C_IF_DIS.
+                if (value & 0x80) != 0 {
+                    self.pwr_mgmt_1 &= !0x80;
+                    self.state.borrow_mut().i2c_if_dis = false;
+                }
+            }
+            0x03 if self.bank == 0 => {
+                self.state.borrow_mut().i2c_if_dis = (value & 0x10) != 0;
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    async fn write_read(
+        &mut self,
+        _address: u8,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        self.check_spi_mode()?;
+
+        read.fill(0);
+        match write.first() {
+            Some(0x00) => {
+                if !read.is_empty() {
+                    read[0] = WHO_AM_I_VALUE;
+                }
+            }
+            Some(0x06) if self.bank == 0 => {
+                if !read.is_empty() {
+                    read[0] = self.pwr_mgmt_1;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
 }
 
 impl embedded_hal_async::i2c::ErrorType for MockAsyncI2c {
@@ -210,25 +386,24 @@ impl embedded_hal_async::i2c::I2c for MockAsyncI2c {
                 0x70 => {
                     // FifoCount (16-bit): new impl reads both bytes in one transaction
                     // (big-endian: high byte at read[0], low byte at read[1]).
+                    let count = self.fifo.len() as u16;
                     if read.len() >= 2 {
-                        read[0] = ((self.fifo_count >> 8) & 0xFF) as u8;
-                        read[1] = (self.fifo_count & 0xFF) as u8;
+                        read[0] = ((count >> 8) & 0xFF) as u8;
+                        read[1] = (count & 0xFF) as u8;
                     } else if !read.is_empty() {
-                        read[0] = ((self.fifo_count >> 8) & 0xFF) as u8;
+                        read[0] = ((count >> 8) & 0xFF) as u8;
                     }
                 }
                 0x71 => {
                     // FIFO_COUNTL register
                     if !read.is_empty() {
-                        read[0] = (self.fifo_count & 0xFF) as u8;
+                        read[0] = (self.fifo.len() as u16 & 0xFF) as u8;
                     }
                 }
                 0x72 => {
-                    // FIFO_R_W register
-                    if !read.is_empty() && self.fifo_count > 0 {
-                        let idx = (512 - self.fifo_count) as usize;
-                        read[0] = self.fifo_data[idx];
-                        self.fifo_count = self.fifo_count.saturating_sub(1);
+                    // FIFO_R_W: fill a full burst and pop each byte.
+                    for byte in read.iter_mut() {
+                        *byte = self.fifo.pop().unwrap_or(0);
                     }
                 }
                 0x7F => {
@@ -367,6 +542,61 @@ fn test_init() {
         let mut delay = MockDelay;
         let result = imu.init(&mut delay).await;
         assert!(result.is_ok());
+    });
+}
+
+#[test]
+fn test_init_spi_async() {
+    block_on(async {
+        let i2c = MockAsyncI2c::new();
+        let interface = I2cInterface::default(i2c);
+
+        let mut imu = new_verified(interface).await;
+
+        let mut delay = MockDelay;
+        let result = imu.init_spi(&mut delay).await;
+        assert!(result.is_ok());
+    });
+}
+
+#[test]
+fn test_init_spi_restores_spi_mode_async() {
+    block_on(async {
+        let (i2c, state) = SpiModeMock::spi_only();
+        let interface = I2cInterface::default(i2c);
+        let mut imu = Icm20948Driver::new(interface);
+
+        let mut delay = MockDelay;
+        imu.init_spi(&mut delay)
+            .await
+            .expect("init_spi should succeed over SPI");
+
+        assert_eq!(
+            state.borrow().spi_mode_violations,
+            0,
+            "init_spi must not read before restoring SPI mode"
+        );
+    });
+}
+
+#[test]
+fn test_legacy_init_times_out_async() {
+    block_on(async {
+        let (i2c, state) = SpiModeMock::spi_only();
+        let interface = I2cInterface::default(i2c);
+        let mut imu = Icm20948Driver::new(interface);
+
+        let mut delay = MockDelay;
+        let result = imu.init(&mut delay).await;
+
+        assert!(
+            matches!(result, Err(Error::InitializationTimeout)),
+            "legacy init should time out over SPI, got {result:?}"
+        );
+        assert!(
+            state.borrow().spi_mode_violations > 0,
+            "legacy init should have read before restoring SPI mode"
+        );
     });
 }
 
@@ -545,7 +775,7 @@ fn test_set_dmp_enable() {
             ));
 
             // Configure (6-axis, no magnetometer required)
-            let config = DmpConfig::six_axis().with_sample_rate(100);
+            let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
 
             imu.dmp_configure(&config)
                 .await
@@ -853,7 +1083,7 @@ fn test_dmp_enable() {
         ));
 
         // Configure (6-axis, no magnetometer required)
-        let config = DmpConfig::six_axis().with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
 
         imu.dmp_configure(&config)
             .await
@@ -909,7 +1139,7 @@ fn test_dmp_configure() {
             .await
             .expect("Firmware load failed");
 
-        let config = DmpConfig::six_axis().with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
 
         let result = imu.dmp_configure(&config).await;
         assert!(result.is_ok());
@@ -930,7 +1160,7 @@ fn test_dmp_configure_requires_mag_init_for_mag_outputs_async() {
             .await
             .expect("Firmware load failed");
 
-        let config = DmpConfig::nine_axis().with_sample_rate(100);
+        let config = DmpConfig::nine_axis().with_sample_rate(DmpSampleRate::Hz112);
 
         let result = imu.dmp_configure(&config).await;
         assert!(matches!(result, Err(Error::MagnetometerNotInitialized)));
@@ -988,35 +1218,83 @@ fn test_reset_fifo() {
 
 #[test]
 #[cfg(feature = "dmp")]
-fn test_dmp_read_fifo_empty() {
+fn test_dmp_fifo_reader_empty() {
     block_on(async {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
         let mut imu = new_verified(interface).await;
+        let mut reader = DmpFifoReader::new();
 
-        let result = imu.dmp_read_fifo().await;
+        let result = reader.read_packet_async(&mut imu).await;
         assert!(result.is_ok());
 
-        // Should return None when FIFO is empty (count < 2)
+        // Should return None when FIFO is empty
         assert!(result.unwrap().is_none());
     });
 }
 
 #[test]
 #[cfg(feature = "dmp")]
-fn test_dmp_read_quaternion_empty() {
+fn test_dmp_fifo_reader_quaternion_empty() {
     block_on(async {
         let i2c = MockAsyncI2c::new();
         let interface = I2cInterface::default(i2c);
 
         let mut imu = new_verified(interface).await;
+        let mut reader = DmpFifoReader::new();
 
-        let result = imu.dmp_read_quaternion().await;
+        // No packet, so no quaternion is produced. Quaternions are read from a
+        // completed `DmpData` via `quaternion_9axis`/`quaternion_6axis`.
+        let result = reader.read_packet_async(&mut imu).await;
         assert!(result.is_ok());
-
-        // Should return None when FIFO is empty
         assert!(result.unwrap().is_none());
+    });
+}
+
+#[test]
+#[cfg(feature = "dmp")]
+fn test_dmp_fifo_reader_split_packet_async() {
+    block_on(async {
+        let i2c = MockAsyncI2c::new();
+        let fifo = i2c.fifo_handle();
+
+        // QUAT9 packet: header + 14-byte payload + footer = 18 bytes.
+        let mut payload = vec![0u8; DmpPacketSize::QUAT9];
+        payload[12..14].copy_from_slice(&9u16.to_be_bytes());
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&DmpPacketHeader::QUAT9_BIT.to_be_bytes());
+        packet.extend_from_slice(&payload);
+        packet.extend_from_slice(&[0u8, 0u8]);
+
+        // Only the header block is initially available.
+        fifo.set(&packet[..4]);
+
+        let interface = I2cInterface::default(i2c);
+        let mut imu = new_verified(interface).await;
+        let mut reader = DmpFifoReader::new();
+
+        assert!(
+            reader
+                .read_packet_async(&mut imu)
+                .await
+                .expect("read_packet_async failed")
+                .is_none()
+        );
+        assert_eq!(fifo.len(), 0, "header bytes must be retained, not lost");
+
+        // Complete the packet and read it.
+        fifo.append(&packet[4..]);
+        let data = reader
+            .read_packet_async(&mut imu)
+            .await
+            .expect("read_packet_async failed")
+            .expect("expected a complete packet");
+
+        assert!(data.quaternion_9axis.is_some());
+        assert_eq!(data.heading_accuracy, Some(9.0));
+        assert_eq!(fifo.len(), 0);
+        assert_eq!(reader.last_packet_bytes(), &packet[..]);
     });
 }
 
@@ -1039,7 +1317,7 @@ fn test_dmp_full_workflow() {
         // Use 6-axis (no magnetometer required) so the mock can complete the full workflow.
         // 9-axis magnetometer-init requirements are covered by
         // `test_dmp_configure_requires_mag_init_for_mag_outputs_async`.
-        let config = DmpConfig::six_axis().with_sample_rate(100);
+        let config = DmpConfig::six_axis().with_sample_rate(DmpSampleRate::Hz112);
 
         imu.dmp_configure(&config)
             .await
@@ -1051,8 +1329,9 @@ fn test_dmp_full_workflow() {
         // Enable DMP
         imu.dmp_enable(true).await.expect("Failed to enable DMP");
 
-        // Try to read (will be empty in mock)
-        let result = imu.dmp_read_quaternion().await;
+        // Drain with the reader (the mock FIFO is empty, so this yields nothing).
+        let mut reader = DmpFifoReader::new();
+        let result = reader.read_packets_async(&mut imu, |_packet| {}).await;
         assert!(result.is_ok());
 
         // Disable DMP
