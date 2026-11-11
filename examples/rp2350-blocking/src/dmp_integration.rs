@@ -26,7 +26,10 @@ use embassy_rp::{
     peripherals::I2C0,
 };
 use embassy_time::{Delay, Duration, Instant};
-use icm20948::{I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig, dmp::DmpConfig};
+use icm20948::{
+    I2cInterface, Icm20948Driver, InterruptConfig, InterruptPinConfig,
+    dmp::{DmpConfig, DmpFifoReader, DmpSampleRate},
+};
 use panic_probe as _;
 
 /// Firmware image type for bootloader
@@ -89,12 +92,12 @@ async fn main(_spawner: Spawner) {
     imu.dmp_init().unwrap();
     imu.dmp_init_magnetometer(&mut delay).unwrap();
 
-    let dmp_sample_rate_hz: u16 = 225;
+    let dmp_sample_rate = DmpSampleRate::Hz225;
 
     let dmp_config = DmpConfig::nine_axis()
         .with_host_calibrated_accel()
         .with_raw_accel()
-        .with_sample_rate(dmp_sample_rate_hz);
+        .with_sample_rate(dmp_sample_rate);
 
     imu.dmp_configure(&dmp_config).unwrap();
     imu.dmp_enable(true).unwrap();
@@ -110,14 +113,16 @@ async fn main(_spawner: Spawner) {
     let mut pos_x = 0.0f32;
     let mut pos_y = 0.0f32;
 
-    let dt = 1.0 / dmp_sample_rate_hz as f32;
+    let dt = 1.0 / dmp_sample_rate.actual_output_hz();
+
+    let mut reader = DmpFifoReader::new();
 
     loop {
         imu_int.wait_for_high().await;
 
         let _status = imu.read_interrupt_status().unwrap();
 
-        if let Some(packet) = imu.dmp_read_fifo().unwrap() {
+        if let Some(packet) = reader.read_packet(&mut imu).unwrap() {
             sample_count = sample_count.wrapping_add(1);
 
             let quat_opt = packet.quaternion_9axis.or(packet.quaternion_6axis);

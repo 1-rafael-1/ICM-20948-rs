@@ -1,0 +1,75 @@
+[package]
+name = "icm20948-rp2354b-spi-examples"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+lto = true
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = true
+opt-level = 0
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = true
+lto = 'fat'
+opt-level = 's'
+
+[dependencies]
+# RP2354B is the B variant of the RP2350 family (more GPIOs, same core).
+embassy-rp = { version = "0.10.0", features = [
+    "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xb",
+] }
+embassy-executor = { version = "0.10.0", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-time = { version = "0.5.1", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+defmt = "1.0.1"
+defmt-rtt = "1.1.0"
+cortex-m-rt = "0.7.5"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+static_cell = { version = "2.1.1", features = [] }
+icm20948 = { package = "icm20948-rs", path = "../..", features = ["async", "defmt"] }
+embedded-hal-bus = { version = "0.2.0", features = ["async"] }
+embedded-hal = "1.0"
+libm = "0.2"
+heapless = "0.8"
+
+[features]
+default = []
+dmp = ["icm20948/dmp"]
+dmp-lzss = ["dmp", "icm20948/dmp-lzss"]
+mag-reinit-diagnostic = []
+
+[[bin]]
+name = "direct_mag_spi"
+path = "src/direct_mag_spi.rs"
+
+[[bin]]
+name = "dmp_nine_axis_spi"
+path = "src/dmp_nine_axis_spi.rs"
+required-features = ["dmp"]
+
+[[bin]]
+name = "dmp_six_axis_spi"
+path = "src/dmp_six_axis_spi.rs"
+required-features = ["dmp"]
+
+[[bin]]
+name = "dmp_fifo_dump_spi"
+path = "src/dmp_fifo_dump_spi.rs"
+required-features = ["dmp"]
